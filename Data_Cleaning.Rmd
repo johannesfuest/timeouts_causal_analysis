@@ -1,0 +1,256 @@
+---
+title: "209 Project"
+output: html_document
+date: "2023-11-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(hoopR)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(lubridate)
+```
+
+
+```{r}
+df <- read.csv("all_games.csv")
+
+# parse time, only keep last minute events
+df <- filter(df, Period >=4)
+time_parts <- strsplit(df$Time, ":")
+df$Minutes <- as.numeric(sapply(time_parts, function(x) as.numeric(x[1])))
+df$Seconds <- as.numeric(sapply(time_parts, function(x) as.numeric(x[2])))
+df <- filter(df, Minutes <1)
+
+# only seasons >= 2010
+df$Date <- as.Date(df$Date, format = "%m/%d/%Y")
+years <- as.numeric(format(df$Date, format = "%Y"))
+months <- as.numeric(format(df$Date, format = "%m"))
+years[months < 9] <- years[months < 9] - 1
+df$Season <- years
+df <- filter(df, Season >= 2010)
+# filter out subs
+df <- filter(df, (AwayIn=="") & (HomeIn==""))
+# filter out end of Q events or jump balls
+df <- filter(df, (HomeEvent== "") | (AwayEvent == ""))
+# filter out loose ball fouls bc for wrong team. Easier to identify off team without
+df <- filter(df,     !(
+      grepl("Loose ball foul", HomeEvent) | 
+      grepl("Loose ball foul", AwayEvent) |
+      grepl("Instant Replay", HomeEvent) |
+      grepl("Instant Replay", AwayEvent)
+    ))
+
+# now join in schedules so we can get the game winner. Annoying team map required :(
+team_mapping <- c(
+  MIN = "MIN",
+  MIA = "MIA",
+  DAL = "DAL",
+  NJN = "NJ",
+  CLE = "CLE",
+  HOU = "HOU",
+  TOR = "TOR",
+  CHO = "CHA",
+  ATL = "ATL",
+  OKC = "OKC",
+  PHO = "PHX",
+  POR = "POR",
+  PHI = "PHI",
+  BRK = "BKN",
+  MEM = "MEM",
+  SAC = "SAC",
+  IND = "IND",
+  GSW = "GS",
+  LAC = "LAC",
+  UTA = "UTAH",
+  ORL = "ORL",
+  MIL = "MIL",
+  DEN = "DEN",
+  DET = "DET",
+  NOP = "NO",
+  BOS = "BOS",
+  WAS = "WSH",
+  CHA = "CHA",
+  SAS = "SA",
+  LAL = "LAL",
+  NYK = "NY",
+  CHI = "CHI",
+  NOH = "NO"
+)
+schedules <- load_nba_schedule(seasons = seq(2010, 2022)) %>% 
+  select(ESPNGameID=game_id, HomeName=home_abbreviation, AwayName=away_abbreviation, Date=date, HomeWinner=home_winner) %>%
+  mutate(Date = as.Date(as.POSIXct(Date, format = "%Y-%m-%dT%H:%M", tz = "UTC"), tz="America/New_York"))
+
+df$HomeName <- team_mapping[df$HomeName]
+df$AwayName <- team_mapping[df$AwayName]
+
+df <- inner_join(df, schedules)
+
+
+write.csv(df, "last_minute_data.csv")
+```
+
+
+```{r}
+df <- read.csv("last_minute_data.csv")
+df$HomeOff <- (df$HomeEvent != "")
+df <- df %>% 
+  arrange(GameID, Possession, -Seconds) %>%
+  group_by(GameID, Possession) %>%
+  mutate(
+    HomePoss = mean(HomeOff),
+    EndPossTime = last(Seconds),
+    StartPossTime = lag(EndPossTime, default = first(Seconds)),
+    # use def rebound time if have it. More precise than the missed shot
+    StartPossTime = ifelse(grepl("Defensive rebound", first(AwayEvent)) | grepl("timeout", first(HomeEvent)), first(Seconds), StartPossTime),
+    # start home away score
+    StartPossAwayScore = lag(AwayScore, default = first(AwayScore)),
+    StartPossHomeScore = lag(HomeScore, default = first(HomeScore)),
+    TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))),
+    TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0
+  ) %>%
+  ungroup() %>%
+  # these are just weird, we can't figure out who was home so remove
+  filter(HomePoss != 0.5) %>%
+  mutate(HomePoss = HomePoss > 0.5,
+         StartPossScoreDiff = ifelse(HomePoss, 1, -1) * (StartPossHomeScore-StartPossAwayScore))
+
+# remove where free throw event and no time off clock. Likely signals foul on rebound
+possessions_to_remove <- df %>%
+  group_by(GameID, Possession) %>%
+  filter(
+    (grepl("free throw", AwayEvent) | (grepl("free throw", HomeEvent))) & (Seconds == StartPossTime)
+  ) %>%
+  select(GameID, Possession) %>%
+  distinct()
+
+df <- df %>%
+  anti_join(possessions_to_remove, by = c("GameID", "Possession"))
+
+
+
+# we will remove poss where timeout was called but not initially. these are hard to assess bc maybe the player was falling out of bounds or it was late in shot clock
+df <- filter(df, TimeoutCalledInitially | (!TimeoutAnytime ))
+
+```
+
+
+```{r}
+# filter to only start poss less than 24
+df <- filter(df, StartPossTime <= 24 & StartPossTime>=0)
+# time bins
+time_bins <- seq(0, 24, by = 4)
+df$TimeBins <- cut(df$StartPossTime, breaks = time_bins, include.lowest = TRUE)
+# valid scores
+acceptable_score_diffs <- c(0, -1, -2)
+# filter to available scores
+df <- filter(df, StartPossScoreDiff %in% acceptable_score_diffs)
+
+# print win% by Score diff and time bucket. These look reasonable!
+df %>%
+  group_by(
+    GameID, Possession, StartPossScoreDiff
+  ) %>%
+  summarise(
+    StartPossScoreDiff = first(StartPossScoreDiff),
+    TimeBins = first(TimeBins),
+    PossTeamWin = (HomePoss & HomeWinner) | (!HomePoss & !HomeWinner),
+    TimeoutCalledInitially = first(TimeoutCalledInitially)
+  ) %>%
+  ungroup() %>%
+  group_by(StartPossScoreDiff, TimeBins) %>%
+  summarise(count = n(),
+            PossTeamWinTimeout = mean(PossTeamWin[TimeoutCalledInitially]),
+            PossTeamWinNoTimeout = mean(PossTeamWin[!TimeoutCalledInitially]),
+            PossTeamWin = mean(PossTeamWin),
+            DiffInMeans = PossTeamWinTimeout - PossTeamWinNoTimeout)
+
+```
+
+
+
+# ```{r cars}
+# seasons = seq(2020, 2022)
+# df <- load_nba_pbp(
+#   seasons = seasons,
+# )
+# schedules <- load_nba_schedule(seasons = seasons) %>% 
+#   select(game_id, home_winner)
+# 
+# df <- inner_join(df, schedules)
+# # number of games
+# print(length(unique(df$game_id)))
+# # sanity check
+# print(mean(df$home_winner))
+# 
+# 
+# df$home_play <- df$team_id == df$home_team_id
+# # score differential in terms of offensive team
+# df$score_diff <- ifelse(df$home_play, df$home_score - df$away_score, df$away_score - df$home_score)
+# # filter to final period, less than 24 seconds
+# df <- df %>% 
+#   filter(qtr >= 4, clock_minutes == 0,clock_seconds <= 48)
+# 
+# 
+# 
+# # end of poss. could use string filtering but some weird ones like 'no turnover' make this annoying
+# df$final_shot <- df$scoring_play & (! df$type_text %in% c("Free Throw - 1 of 3", "Free Throw - 2 of 3",   "Free Throw - 1 of 2"))
+# end_of_possession_strings <- c(
+#   "Defensive Rebound", "Out of Bounds - Bad Pass Turnover",
+#   "Shot Clock Turnover", "Bad Pass\nTurnover",
+#   "Lost Ball Turnover", "Turnover",
+#   "Out of Bounds - Lost Ball Turnover", "Traveling",
+#   "Offensive Charge", "Back Court Turnover",
+#   "Palming Turnover",
+#   "Offensive Foul Turnover", "Disc Dribble Turnover", "Kicked Ball Turnover",
+#   "Inbound Turnover", "Double Dribble Turnover",
+#   "3-Second Turnover", "End Period", "Defensive Goaltending", "Offensive Goaltending Turnover", "Lane Violation Turnover", "Out of Bounds - Step Turnover" 
+# )
+# # these ids represent end of possession
+# end_poss_ids <- df %>% 
+#   filter((final_shot) | type_text %in% end_of_possession_strings) %>%
+#   pull(id)
+# df$end_poss <- (df$id %in% end_poss_ids)
+# 
+# # figure out when the possession started
+# df <- df %>%
+#   arrange(game_id, sequence_number) %>%
+#   group_by(game_id) %>%
+#   mutate(
+#     start_poss_time = ifelse(end_poss, clock_seconds, NA),
+#     start_poss_time = na.locf(start_poss_time, na.rm = FALSE),
+#     end_poss_time = ifelse(end_poss, start_poss_time, NA),
+#     start_poss_time = ifelse(end_poss, NA, start_poss_time),
+#     start_poss_time = na.locf(start_poss_time, na.rm = FALSE),
+#     end_poss_time = na.locf(end_poss_time, na.rm = FALSE, fromLast=TRUE),
+#   ) %>%
+#   ungroup()
+# 
+# # figure out who is on offense in given poss. Then figure out if they called TO
+# df$home_off = ifelse(df$type_text == "Defensive Rebound" & df$end_poss == TRUE, !df$home_play, 
+#                       ifelse(df$end_poss == TRUE, df$home_play, NA))
+# df <- df %>% 
+#   group_by(game_id, start_poss_time) %>%
+#   mutate(
+#     home_off = mean(home_off, na.rm = TRUE),
+#   ) %>%
+#   ungroup() %>%
+#   group_by(game_id, start_poss_time) %>%
+#   mutate(
+#     home_timeout = sum((type_text == "Full Timeout") & ())
+#   ) %>%
+#   ungroup()
+# # verify off team calling the timeouts
+# 
+# # filter to only start poss less than 24
+# df <- filter(df, start_poss_time <= 24 & start_poss_time>=0)
+# # time bins
+# time_bins <- seq(0, 24, by = 4)
+# df$time_bins <- cut(df$start_poss_time, breaks = time_bins, include.lowest = TRUE)
+# # valid scores
+# acceptable_score_diffs <- c(0, -1, -2)
+# 
+# ```
+
