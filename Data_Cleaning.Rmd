@@ -14,6 +14,7 @@ library(lubridate)
 ```
 
 
+This is the initial preprocessing. You can skip this chunk and proceed with last_minute_data.csv
 ```{r}
 df <- read.csv("all_games.csv")
 
@@ -80,8 +81,9 @@ team_mapping <- c(
   NOH = "NO"
 )
 schedules <- load_nba_schedule(seasons = seq(2010, 2022)) %>% 
-  select(ESPNGameID=game_id, HomeName=home_abbreviation, AwayName=away_abbreviation, Date=date, HomeWinner=home_winner) %>%
-  mutate(Date = as.Date(as.POSIXct(Date, format = "%Y-%m-%dT%H:%M", tz = "UTC"), tz="America/New_York"))
+  select(ESPNGameID=game_id, HomeName=home_abbreviation, AwayName=away_abbreviation, Date=date, HomeWinner=home_winner, IsPlayoffs=season_type) %>%
+  mutate(Date = as.Date(as.POSIXct(Date, format = "%Y-%m-%dT%H:%M", tz = "UTC"), tz="America/New_York"),
+         IsPlayoffs = (IsPlayoffs == 3))
 
 df$HomeName <- team_mapping[df$HomeName]
 df$AwayName <- team_mapping[df$AwayName]
@@ -92,36 +94,79 @@ df <- inner_join(df, schedules)
 write.csv(df, "last_minute_data.csv")
 ```
 
-
+Possession Specific Feature Engineering
 ```{r}
 df <- read.csv("last_minute_data.csv")
 df$HomeOff <- (df$HomeEvent != "")
-df <- df %>% 
+
+# Variety of Features on Game-Poss Level and on Event Level
+
+# Step 1: Create a df for the following poss
+end_poss_df <- df %>%
   arrange(GameID, Possession, -Seconds) %>%
+  group_by(GameID, Possession) %>%
+  summarize(
+    StartPossTime = last(Seconds),
+    StartPossHomeScore = last(HomeScore),
+    StartPossAwayScore = last(AwayScore)
+  ) %>%
+  ungroup() %>%
+  mutate(Possession = Possession + 1)
+
+# Step 2: Join the temporary dataframe with the original dataframe
+df <- df %>%
+  arrange(GameID, Possession, -Seconds) %>%
+  left_join(end_poss_df, by = c("GameID", "Possession")) %>%
   group_by(GameID, Possession) %>%
   mutate(
     HomePoss = mean(HomeOff),
+    StartDrb = grepl("Defensive rebound", first(AwayEvent)) | grepl("timeout", first(HomeEvent)),
+    StartPossTime = ifelse(StartDrb | is.na(StartPossTime), first(Seconds), StartPossTime),
     EndPossTime = last(Seconds),
-    StartPossTime = lag(EndPossTime, default = first(Seconds)),
-    # use def rebound time if have it. More precise than the missed shot
-    StartPossTime = ifelse(grepl("Defensive rebound", first(AwayEvent)) | grepl("timeout", first(HomeEvent)), first(Seconds), StartPossTime),
-    # start home away score
-    StartPossAwayScore = lag(AwayScore, default = first(AwayScore)),
-    StartPossHomeScore = lag(HomeScore, default = first(HomeScore)),
-    TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))),
+    TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))) |
+      (StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))),
     TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0
   ) %>%
   ungroup() %>%
   # these are just weird, we can't figure out who was home so remove
   filter(HomePoss != 0.5) %>%
   mutate(HomePoss = HomePoss > 0.5,
-         StartPossScoreDiff = ifelse(HomePoss, 1, -1) * (StartPossHomeScore-StartPossAwayScore))
+         StartPossScoreDiff = ifelse(HomePoss, 1, -1) * (StartPossHomeScore-StartPossAwayScore),
+         PossTeamWin = (HomePoss & HomeWinner) | (!HomePoss & !HomeWinner),
+         StartTmScore = ifelse(HomePoss, StartPossHomeScore, StartPossAwayScore),
+         StartOppScore = ifelse(HomePoss, StartPossAwayScore, StartPossHomeScore),
+         StartTmPtsPerPoss = StartTmScore / ((Possession - 1) / 2),
+         StartOppPtsPerPoss = StartOppScore  / ((Possession - 1) / 2),
+         Event = ifelse(HomePoss, HomeEvent, AwayEvent))
+
+# Now let's get the start event
+end_event_df <- df %>%
+  arrange(GameID, Possession, -Seconds) %>%
+  group_by(GameID, Possession) %>%
+  summarize(
+    StartEvent = last(Event),
+  ) %>%
+  ungroup() %>%
+  mutate(Possession = Possession + 1)
+
+
+df <- df %>%
+  arrange(GameID, Possession, -Seconds) %>%
+  left_join(end_event_df, by = c("GameID", "Possession")) %>%
+  mutate(
+    StartEvent = ifelse(StartDrb, "Drb",
+                ifelse(is.na(StartEvent), "Other",
+                ifelse(grepl("timeout", StartEvent), "Timeout", 
+                ifelse(grepl("makes", StartEvent), "Makes", 
+                ifelse(grepl("turnover", StartEvent), "Turnover", "Other")))))
+  )
+
 
 # remove where free throw event and no time off clock. Likely signals foul on rebound
 possessions_to_remove <- df %>%
   group_by(GameID, Possession) %>%
   filter(
-    (grepl("free throw", AwayEvent) | (grepl("free throw", HomeEvent))) & (Seconds == StartPossTime)
+    (grepl("free throw", Event)) & (Seconds == StartPossTime)
   ) %>%
   select(GameID, Possession) %>%
   distinct()
@@ -132,7 +177,7 @@ df <- df %>%
 
 
 # we will remove poss where timeout was called but not initially. these are hard to assess bc maybe the player was falling out of bounds or it was late in shot clock
-df <- filter(df, TimeoutCalledInitially | (!TimeoutAnytime ))
+df <- filter(df, TimeoutCalledInitially | (!TimeoutAnytime ), EndPossTime < StartPossTime)
 
 ```
 
@@ -148,18 +193,28 @@ acceptable_score_diffs <- c(0, -1, -2)
 # filter to available scores
 df <- filter(df, StartPossScoreDiff %in% acceptable_score_diffs)
 
-# print win% by Score diff and time bucket. These look reasonable!
-df %>%
+# filter it down to one row per poss with our Zi, Yi, and some Xi
+summary_df <- df %>%
   group_by(
-    GameID, Possession, StartPossScoreDiff
+    GameID, Possession
   ) %>%
   summarise(
     StartPossScoreDiff = first(StartPossScoreDiff),
     TimeBins = first(TimeBins),
-    PossTeamWin = (HomePoss & HomeWinner) | (!HomePoss & !HomeWinner),
-    TimeoutCalledInitially = first(TimeoutCalledInitially)
+    PossTeamWin = first(PossTeamWin),
+    TimeoutCalledInitially = first(TimeoutCalledInitially),
+    StartTmScore = first(StartTmScore),
+    StartOppScore = first(StartOppScore),
+    StartTmPtsPerPoss = first(StartTmPtsPerPoss),
+    StartOppPtsPerPoss = first(StartOppPtsPerPoss),
+    HomePoss = first(HomePoss),
+    IsPlayoffs = first(IsPlayoffs),
+    StartEvent = first(StartEvent)
   ) %>%
-  ungroup() %>%
+  ungroup() 
+
+# print win% by Score diff and time bucket. These look reasonable!
+summary_df %>%
   group_by(StartPossScoreDiff, TimeBins) %>%
   summarise(count = n(),
             PossTeamWinTimeout = mean(PossTeamWin[TimeoutCalledInitially]),
@@ -167,7 +222,11 @@ df %>%
             PossTeamWin = mean(PossTeamWin),
             DiffInMeans = PossTeamWinTimeout - PossTeamWinNoTimeout)
 
+# game specific features: StartTmPtsPerPoss, StartOppPtsPerPoss, HomePoss, IsPlayoffs, StartEvent (TODO), BonusIndicator (?)
+
 ```
+
+
 
 
 
