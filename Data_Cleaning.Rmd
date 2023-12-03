@@ -11,18 +11,37 @@ library(dplyr)
 library(tidyr)
 library(zoo)
 library(lubridate)
+library(tidyverse)
 ```
 
 
 This is the initial preprocessing. You can skip this chunk and proceed with last_minute_data.csv
 ```{r}
 df <- read.csv("all_games.csv")
-
 # parse time, only keep last minute events
 df <- filter(df, Period >=4)
+
+df$HomeEvent <- tolower(df$HomeEvent)
+df$AwayEvent <- tolower(df$AwayEvent)
+
+
+
+
 time_parts <- strsplit(df$Time, ":")
 df$Minutes <- as.numeric(sapply(time_parts, function(x) as.numeric(x[1])))
 df$Seconds <- as.numeric(sapply(time_parts, function(x) as.numeric(x[2])))
+# Seconds since last timeout and score diff
+df$LastTimeoutTime <- lag(ifelse(grepl("timeout", df$AwayEvent) | grepl("timeout", df$HomeEvent), df$Seconds + 60*df$Minutes, NA))
+df$HomeScoreDiffLastMinute <- ifelse(df$Minutes >= 1, as.numeric(df$HomeScore) - as.numeric(df$AwayScore), NA)
+df$HomeScoreDiffLast2Minutes <- ifelse(df$Minutes >= 2, as.numeric(df$HomeScore) - as.numeric(df$AwayScore), NA)
+df <- df %>% 
+  arrange(GameID, Possession, -Seconds) %>%
+  group_by(GameID, Period) %>%
+  fill(LastTimeoutTime, .direction = "down") %>%
+  fill(HomeScoreDiffLastMinute, .direction = "down") %>%
+  fill(HomeScoreDiffLast2Minutes, .direction = "down") %>%
+  ungroup()
+
 df <- filter(df, Minutes <1)
 
 # only seasons >= 2010
@@ -35,13 +54,15 @@ df <- filter(df, Season >= 2010)
 # filter out subs
 df <- filter(df, (AwayIn=="") & (HomeIn==""))
 # filter out end of Q events or jump balls
-df <- filter(df, (HomeEvent== "") | (AwayEvent == ""))
+# df <- filter(df, (HomeEvent== "") | (AwayEvent == ""))
 # filter out loose ball fouls bc for wrong team. Easier to identify off team without
 df <- filter(df,     !(
-      grepl("Loose ball foul", HomeEvent) | 
-      grepl("Loose ball foul", AwayEvent) |
-      grepl("Instant Replay", HomeEvent) |
-      grepl("Instant Replay", AwayEvent)
+      grepl("loose ball foul", HomeEvent) | 
+      grepl("loose ball foul", AwayEvent) |
+      grepl("instant replay", HomeEvent) |
+      grepl("instant replay", AwayEvent) |
+      grepl("jump ball", HomeEvent) |
+      grepl("jump ball", AwayEvent)
     ))
 
 # now join in schedules so we can get the game winner. Annoying team map required :(
@@ -90,6 +111,24 @@ df$AwayName <- team_mapping[df$AwayName]
 
 df <- inner_join(df, schedules)
 
+# who was on offense on the last play
+df <- df %>% 
+  arrange(GameID, -Seconds) %>%
+  mutate(
+    PrevEvent = lag(ifelse(HomeEvent == "", AwayEvent, HomeEvent)),
+    PrevEventHome = lag(HomeEvent) != "",
+    PrevTime = lag(Seconds),
+    # if PrevTime not 0 and PrevEvent is turnover or made shot then opp team event
+    HomeEvent = ifelse(grepl("end of", HomeEvent) & (grepl("makes", PrevEvent) | grepl("turnover", PrevEvent)), 
+                       ifelse(PrevEventHome, "", HomeEvent), 
+                       ifelse(grepl("end of", HomeEvent), 
+                              ifelse(PrevEventHome, HomeEvent, ""), HomeEvent)),
+    AwayEvent = ifelse(grepl("end of", AwayEvent) & (grepl("makes", PrevEvent) | grepl("turnover", PrevEvent)), 
+                       ifelse(PrevEventHome, AwayEvent, ""), 
+                       ifelse(grepl("end of", AwayEvent), 
+                              ifelse(PrevEventHome, "", AwayEvent), AwayEvent))
+  )
+df <- filter(df, (HomeEvent== "") | (AwayEvent == ""))
 
 write.csv(df, "last_minute_data.csv")
 ```
@@ -98,6 +137,8 @@ Possession Specific Feature Engineering
 ```{r}
 df <- read.csv("last_minute_data.csv")
 df$HomeOff <- (df$HomeEvent != "")
+# filter out off poss by team events bc they mess up who is on off or def. They are often not real
+df <- filter(df, ! (grepl("Offensive rebound by Team", first(AwayEvent)) | grepl("Offensive rebound by Team", first(HomeEvent))))
 
 # Variety of Features on Game-Poss Level and on Event Level
 
@@ -120,24 +161,30 @@ df <- df %>%
   group_by(GameID, Possession) %>%
   mutate(
     HomePoss = mean(HomeOff),
-    StartDrb = grepl("Defensive rebound", first(AwayEvent)) | grepl("timeout", first(HomeEvent)),
+    StartDrb = grepl("defensive rebound", first(AwayEvent)) | grepl("defensive rebound", first(HomeEvent)),
     StartPossTime = ifelse(StartDrb | is.na(StartPossTime), first(Seconds), StartPossTime),
     EndPossTime = last(Seconds),
     TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))) |
       (StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))),
-    TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0
+    TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0,
+    LastTimeoutTime = first(LastTimeoutTime)
   ) %>%
   ungroup() %>%
   # these are just weird, we can't figure out who was home so remove
   filter(HomePoss != 0.5) %>%
   mutate(HomePoss = HomePoss > 0.5,
          StartPossScoreDiff = ifelse(HomePoss, 1, -1) * (StartPossHomeScore-StartPossAwayScore),
+         # negative means the other team went on a run
+         ScoreDiffLastMinute = StartPossScoreDiff - ifelse(HomePoss, HomeScoreDiffLastMinute, -HomeScoreDiffLastMinute),
+         ScoreDiffLast2Minutes = StartPossScoreDiff - ifelse(HomePoss, HomeScoreDiffLast2Minutes, -HomeScoreDiffLast2Minutes),
          PossTeamWin = (HomePoss & HomeWinner) | (!HomePoss & !HomeWinner),
          StartTmScore = ifelse(HomePoss, StartPossHomeScore, StartPossAwayScore),
          StartOppScore = ifelse(HomePoss, StartPossAwayScore, StartPossHomeScore),
          StartTmPtsPerPoss = StartTmScore / ((Possession - 1) / 2),
          StartOppPtsPerPoss = StartOppScore  / ((Possession - 1) / 2),
-         Event = ifelse(HomePoss, HomeEvent, AwayEvent))
+         Event = ifelse(HomePoss, HomeEvent, AwayEvent),
+         # sometimes no TO called in OT. Just treat max as 300
+         SecondsSinceLastTimeout = ifelse(is.na(LastTimeoutTime), 300,LastTimeoutTime)  - StartPossTime)
 
 # Now let's get the start event
 end_event_df <- df %>%
@@ -149,16 +196,20 @@ end_event_df <- df %>%
   ungroup() %>%
   mutate(Possession = Possession + 1)
 
+# dead ball turnovers: (traveling), (dbl dribble), (out of bounds lost ball), (offensive foul), (step out of bounds), (back court), (offensive goaltending), (inbound), (palming)
 
 df <- df %>%
   arrange(GameID, Possession, -Seconds) %>%
   left_join(end_event_df, by = c("GameID", "Possession")) %>%
   mutate(
+    # sometimes the timeout is on the previous poss count for some reason
+    TimeoutCalledInitially = ifelse(!is.na(StartEvent) & (grepl("timeout", StartEvent) == "Timeout"), TRUE, TimeoutCalledInitially),
     StartEvent = ifelse(StartDrb, "Drb",
-                ifelse(is.na(StartEvent), "Other",
+                ifelse(is.na(StartEvent), NA,
                 ifelse(grepl("timeout", StartEvent), "Timeout", 
-                ifelse(grepl("makes", StartEvent), "Makes", 
-                ifelse(grepl("turnover", StartEvent), "Turnover", "Other")))))
+                ifelse(grepl("(traveling)") | grepl("(traveling)") | grepl("(dbl dribble)") | grepl("(out of bounds lost ball)") | grepl("(offensive foul)") | grepl("(step out of bounds)") | grepl("(back court)") | grepl("(offensive goaltending)") | grepl("(inbound)") | grepl("(palming)"), "Dead Ball Turnover",
+                ifelse(grepl("makes", StartEvent), "Make", 
+                ifelse(grepl("turnover", StartEvent), "Live Ball Turnover", NA))))))
   )
 
 
@@ -217,13 +268,13 @@ summary_df <- df %>%
 summary_df %>%
   group_by(StartPossScoreDiff, TimeBins) %>%
   summarise(count = n(),
+            mean(TimeoutCalledInitially),
             PossTeamWinTimeout = mean(PossTeamWin[TimeoutCalledInitially]),
             PossTeamWinNoTimeout = mean(PossTeamWin[!TimeoutCalledInitially]),
             PossTeamWin = mean(PossTeamWin),
             DiffInMeans = PossTeamWinTimeout - PossTeamWinNoTimeout)
 
-# game specific features: StartTmPtsPerPoss, StartOppPtsPerPoss, HomePoss, IsPlayoffs, StartEvent (TODO), BonusIndicator (?)
-
+# game specific features: StartTmPtsPerPoss, StartOppPtsPerPoss, HomePoss, IsPlayoffs, StartEvent, BonusIndicator (?)
 ```
 
 
