@@ -207,7 +207,7 @@ df <- df %>%
     StartEvent = ifelse(StartDrb, "Drb",
                 ifelse(is.na(StartEvent), NA,
                 ifelse(grepl("timeout", StartEvent), "Timeout", 
-                ifelse(grepl("(traveling)") | grepl("(traveling)") | grepl("(dbl dribble)") | grepl("(out of bounds lost ball)") | grepl("(offensive foul)") | grepl("(step out of bounds)") | grepl("(back court)") | grepl("(offensive goaltending)") | grepl("(inbound)") | grepl("(palming)"), "Dead Ball Turnover",
+                ifelse(grepl("(traveling)", StartEvent) | grepl("(dbl dribble)", StartEvent) | grepl("(out of bounds lost ball)", StartEvent) | grepl("(offensive foul)", StartEvent) | grepl("(step out of bounds)", StartEvent) | grepl("(back court)", StartEvent) | grepl("(offensive goaltending)", StartEvent) | grepl("(inbound)", StartEvent) | grepl("(palming)", StartEvent), "Dead Ball Turnover",
                 ifelse(grepl("makes", StartEvent), "Make", 
                 ifelse(grepl("turnover", StartEvent), "Live Ball Turnover", NA))))))
   )
@@ -247,7 +247,7 @@ df <- filter(df, StartPossScoreDiff %in% acceptable_score_diffs)
 # filter it down to one row per poss with our Zi, Yi, and some Xi
 summary_df <- df %>%
   group_by(
-    GameID, Possession
+    GameID, ESPNGameID, Possession
   ) %>%
   summarise(
     StartPossScoreDiff = first(StartPossScoreDiff),
@@ -260,7 +260,9 @@ summary_df <- df %>%
     StartOppPtsPerPoss = first(StartOppPtsPerPoss),
     HomePoss = first(HomePoss),
     IsPlayoffs = first(IsPlayoffs),
-    StartEvent = first(StartEvent)
+    StartEvent = first(StartEvent),
+    SecondsSinceLastTimeout = first(SecondsSinceLastTimeout),
+    ScoreDiffLastMinute = first(ScoreDiffLastMinute)
   ) %>%
   ungroup() 
 
@@ -275,6 +277,38 @@ summary_df %>%
             DiffInMeans = PossTeamWinTimeout - PossTeamWinNoTimeout)
 
 # game specific features: StartTmPtsPerPoss, StartOppPtsPerPoss, HomePoss, IsPlayoffs, StartEvent, BonusIndicator (?)
+```
+
+
+Now join in the off def ratings
+```{r}
+off_def_ratings <- read.csv("off_def_ratings.csv") %>%
+  rename(ESPNGameID = game_id)
+home_off <- filter(off_def_ratings) %>%
+  group_by(ESPNGameID) %>%
+  summarise(
+    off_rating = mean(off_rating[is_home]),
+    def_rating = mean(def_rating[!is_home]),
+  ) %>%
+  ungroup()
+away_off <- filter(off_def_ratings, !is_home) %>%
+  group_by(ESPNGameID) %>%
+  summarise(
+    off_rating = mean(off_rating[!is_home]),
+    def_rating = mean(def_rating[is_home]),
+  ) %>%
+  ungroup()
+
+home_summary <- summary_df %>% 
+  filter(HomePoss) %>%
+  left_join(home_off)
+
+away_summary <- summary_df %>% 
+  filter(!HomePoss) %>%
+  left_join(away_off)
+
+summary_df <- rbind(home_summary, away_summary)
+
 ```
 
 
