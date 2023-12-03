@@ -166,6 +166,8 @@ df <- df %>%
     EndPossTime = last(Seconds),
     TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))) |
       (StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))),
+    HomeTeamTimeout = ifelse(TimeoutCalledInitially, ifelse(grepl("timeout", first(AwayEvent)) | (StartDrb & (grepl("timeout", AwayEvent[2]))), 0, 1), NA),
+    TimeoutTime =  ifelse((StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))), Seconds[2], StartPossTime),
     TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0,
     LastTimeoutTime = first(LastTimeoutTime)
   ) %>%
@@ -229,6 +231,7 @@ df <- df %>%
 
 # we will remove poss where timeout was called but not initially. these are hard to assess bc maybe the player was falling out of bounds or it was late in shot clock
 df <- filter(df, TimeoutCalledInitially | (!TimeoutAnytime ), EndPossTime < StartPossTime)
+df <- filter(df, is.na(HomeTeamTimeout) | ((!(!HomePoss & HomeTeamTimeout)) & (!(HomePoss & !HomeTeamTimeout))))
 
 ```
 
@@ -254,6 +257,8 @@ summary_df <- df %>%
     TimeBins = first(TimeBins),
     PossTeamWin = first(PossTeamWin),
     TimeoutCalledInitially = first(TimeoutCalledInitially),
+    HomeTeamTimeout = first(HomeTeamTimeout),
+    StartPossTime = first(StartPossTime),
     StartTmScore = first(StartTmScore),
     StartOppScore = first(StartOppScore),
     StartTmPtsPerPoss = first(StartTmPtsPerPoss),
@@ -262,7 +267,9 @@ summary_df <- df %>%
     IsPlayoffs = first(IsPlayoffs),
     StartEvent = first(StartEvent),
     SecondsSinceLastTimeout = first(SecondsSinceLastTimeout),
-    ScoreDiffLastMinute = first(ScoreDiffLastMinute)
+    ScoreDiffLastMinute = first(ScoreDiffLastMinute),
+    TimeoutTime = first(TimeoutTime),
+    Period = first(Period)
   ) %>%
   ungroup() 
 
@@ -308,7 +315,7 @@ away_summary <- summary_df %>%
   left_join(away_off)
 
 summary_df <- rbind(home_summary, away_summary)
-
+write.csv(summary_df, "poss_summary.csv")
 ```
 
 
