@@ -1,0 +1,41 @@
+---
+title: "team_stats"
+author: "Johannes Fuest"
+date: "12/3/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(zoo)
+team_box <- load_nba_team_box(seasons = seq(2010,2022))
+```
+
+```{r}
+# join to get number of possessions
+team_box <- left_join(team_box, df, by = c("game_id" = "ESPNGameID"))
+```{r}
+final_df <- team_box %>%
+  arrange(season, team_name, game_date) %>%
+  group_by(season, team_name) %>%
+  mutate(
+    off_rating = rollapply(team_score / (Possession / 2), width = 11, FUN = function(x) mean(head(x, -1), na.rm = TRUE), partial = TRUE, fill = NA, align = "right"),
+    def_rating = rollapply(opponent_team_score/ (Possession / 2), width = 11, FUN = function(x) mean(head(x, -1), na.rm = TRUE), partial = TRUE, fill = NA, align = "right")
+  ) %>%
+  select(season, team_name, game_date, team_score, opponent_team_score, off_rating, def_rating, season_type, Possession)
+```
+
+```{r}
+# replace playoff score with most recent regular season score
+final_df <- final_df %>%
+  arrange(season, team_name, game_date) %>%  # Ensure the data is ordered
+  group_by(season, team_name) %>%
+  mutate(
+    last_rating = ifelse(season_type == 2, off_rating, NA),  # Mark the rating for season_type = 2
+    last_rating = zoo::na.locf(last_rating, na.rm = FALSE),       # Carry the last non-NA forward
+    off_rating = ifelse(season_type == 3, last_rating, off_rating)  # Replace if season_type is 3
+  )
