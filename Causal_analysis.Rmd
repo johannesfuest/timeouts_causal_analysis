@@ -143,25 +143,76 @@ tau_boot8 <- list()
 tau_boot9 <- list()
 tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6, tau_boot7, tau_boot8, tau_boot9)
 for (j in 1:900){
-    bootstrapped_df <- df_list[[(j%%9) + 1]][sample(nrow(df_list[[(j%%9) + 1]])*0.8, replace = FALSE), ]
+    bootstrapped_df <- df_list[[(j%%9) + 1]][sample(nrow(df_list[[(j%%9) + 1]]), nrow(df_list[[(j%%9) + 1]])*0.99, replace = FALSE), ]
+    
     model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
                  +off_rating+def_rating,
                data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial)
+    
     model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
                  +off_rating+def_rating,
                data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial)
+    
     mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
+    
     mu_hat_0 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_0, bootstrapped_df, type = "response"))
-    print(mu_hat_1 - mu_hat_0)
     tau_boot[[(j%%9) + 1]][[(as.integer(j/9)%%100) + 1]] <- (mu_hat_1 - mu_hat_0)
 }
 ```
 This gives us CIs for all of our taus for AIPW:
 ```{r}
-for (j in 1:9) {
-  print(tau_aipws[[j]] + 1.96*)
+for (i in 1:9) {
+  alpha <- 0.05
+  lower_bound <- sort(unlist(tau_boot[[i]]))[[2]]
+  upper_bound <- sort(unlist(tau_boot[[i]]))[[98]]
+  conf_interval <- c(lower_bound, upper_bound)
+  print(conf_interval)
 }
+
+```
+Some of our taus are not zero. More analysis later: 
+
+Next: matched pairs design:
+```{r}
+library(DOS2)
+library(RItools)
+library(optmatch)
+library(plyr)
+library(rcbalance)
+```
+```{r}
+plot(xBalance(fmla=TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating, data=df1))
+```
+There are large differences in covariates between treatment and control groups.
+This is also reflected in different propensity score distributions
+```{r}
+df1$prop <- predict(e_x, df1, type = "response")
+ggplot(data=df1, aes(x=prop, group=as.factor(TimeoutCalledInitially),
+fill=as.factor(TimeoutCalledInitially))) + geom_density(alpha=0.5) + theme_bw()
+```
+```{r}
+mat.2 <- smahal(df1$TimeoutCalledInitially,df1[,c("StartPossTime","StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs","SecondsSinceLastTimeout","ScoreDiffLastMinute","off_rating","def_rating")])
+ms.2 <- pairmatch(mat.2, data=df1)
+plot(xBalance(TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+strata=list(unstrat=NULL, ms.2=~ms.2),
+data=df1))
+legend(
+    "topright",
+    legend = c("unstrat", "ms.2"),
+    inset = 0.01,
+    pch = c(15, 16),
+    bg = "white"
+)
+```
+Shelving matching for now and moving on to IV regression using TimeoutRemaining
+as an instrumental variable:
+```{r}
+
 ```
 
