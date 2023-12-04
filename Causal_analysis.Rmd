@@ -21,9 +21,19 @@ df1$TimeBins_old <- NULL
 #TO DO: unsure what this column is and why 33% of its values are null -> ask the squad
 df1$HomeTeamTimeout <- NULL
 df1 <- na.omit(df1)
-columns_to_keep <- c("StartPossScoreDiff","TimeBins","PossTeamWin","TimeoutCalledInitially","StartPossTime","StartTmScore","StartOppScore","StartTmPtsPerPoss","StartOppPtsPerPoss","HomePoss","IsPlayoffs","StartEvent","SecondsSinceLastTimeout","ScoreDiffLastMinute","TimeoutTime", "Period", "off_rating", "TimeoutRemaining", "def_rating")
+# having both own and opp ptsperposs in causes multicollinearity (corr .99) -> keep only own
+#keeping StartPossScoreDiff and StartTmScore and StartOppScore not possible due to multicollinearity -> keep only StartPossScorediff
+#keeping period messes with regressions due to unseen levels in factor
+
+columns_to_keep <- c("TimeBins","StartEvent","PossTeamWin","TimeoutCalledInitially",
+                     "StartPossTime", "StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs",
+                     "SecondsSinceLastTimeout","ScoreDiffLastMinute", 
+                     "off_rating", "def_rating", "TimeoutRemaining")
+
 df1 <- df1[,columns_to_keep]
-df1$Period <- as.factor(df1$Period)
+numeric_cols <- sapply(df1, is.numeric)
+df1[numeric_cols] <- scale(df1[numeric_cols])
+df1 <- df1[!duplicated(df1), ]
 ```
 
 First up, we look at the basic diff-in-means:
@@ -79,10 +89,12 @@ call holding constant our covariates. We will do this by using AIPW:
 variables in model. #TODO: ask Dominik/TAs if this is fine (bias?) We also do not
 use Timeoutremaining here
 ```{r}
+# Use only TimeoutRemaining == TRUE data for propensity score estimation
 df_timeouts <- df1[df1$TimeoutRemaining == TRUE,]
 # not using starting scores and per minute scores to avoid multicollinearity (was getting N/A coef values)
-e_x <- glm(TimeoutCalledInitially ~ 1+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
-               StartOppPtsPerPoss+HomePoss+IsPlayoffs+StartEvent+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
              data = df_timeouts, family = binomial)
 summary(e_x)
 ```
@@ -95,11 +107,13 @@ model_list <- list()
 # Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
 for (i in 1:length(df_list)) {
   
-  model_1 <- glm(PossTeamWin ~ 1+TimeoutCalledInitially+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
-               StartOppPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+  model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
              data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial)
-  model_0 <- glm(PossTeamWin ~ 1+TimeoutCalledInitially+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
-               StartOppPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+  model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
              data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial)
   model_list[[i]] <- list(model_1, model_0)
 }
@@ -108,17 +122,46 @@ for (i in 1:length(df_list)) {
 ```{r}
 tau_aipws <- list()
 for (i in 1:length(df_list)) {
-  print(i)
   df_temp <- df_list[[i]]
-  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - predict(model_list[[i]][[1]], df_temp, type = "response"))/predict(e_x, df_temp, type = "response")) +  predict(model_list[[i]][[1]], df_temp, type = "response"))
-  mu_hat_0 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - predict(model_list[[i]][[2]], df_temp, type = "response"))/predict(e_x, df_temp, type = "response")) +  predict(model_list[[i]][[2]], df_temp, type = "response"))
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - suppressWarnings(predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  suppressWarnings(predict(model_list[[i]][[1]], df_temp, type = "response")))
+  mu_hat_0 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - suppressWarnings(predict(model_list[[i]][[2]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) + suppressWarnings(predict(model_list[[i]][[2]], df_temp, type = "response")))
   tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
 }
 print(tau_aipws)
 ```
-#TO DO: discuss numbers with team, bootstrapping
+Next, we use the bootstrap to estimate the variance of our AIPW taus
+Question: how to bootstrap when model must be re-estimated each time?
 ```{r}
-
+tau_boot1 <- list()
+tau_boot2 <- list()
+tau_boot3 <- list()
+tau_boot4 <- list()
+tau_boot5 <- list()
+tau_boot6 <- list()
+tau_boot7 <- list()
+tau_boot8 <- list()
+tau_boot9 <- list()
+tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6, tau_boot7, tau_boot8, tau_boot9)
+for (j in 1:900){
+    bootstrapped_df <- df_list[[(j%%9) + 1]][sample(nrow(df_list[[(j%%9) + 1]])*0.8, replace = FALSE), ]
+    model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial)
+    model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial)
+    mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
+    mu_hat_0 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_0, bootstrapped_df, type = "response"))
+    print(mu_hat_1 - mu_hat_0)
+    tau_boot[[(j%%9) + 1]][[(as.integer(j/9)%%100) + 1]] <- (mu_hat_1 - mu_hat_0)
+}
 ```
-
+This gives us CIs for all of our taus for AIPW:
+```{r}
+for (j in 1:9) {
+  print(tau_aipws[[j]] + 1.96*)
+}
+```
 
