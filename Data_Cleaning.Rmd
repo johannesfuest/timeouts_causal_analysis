@@ -166,8 +166,6 @@ df <- df %>%
     EndPossTime = last(Seconds),
     TimeoutCalledInitially = (grepl("timeout", first(AwayEvent)) | grepl("timeout", first(HomeEvent))) |
       (StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))),
-    HomeTeamTimeout = ifelse(TimeoutCalledInitially, ifelse(grepl("timeout", first(AwayEvent)) | (StartDrb & (grepl("timeout", AwayEvent[2]))), 0, 1), NA),
-    TimeoutTime =  ifelse((StartDrb & (grepl("timeout", AwayEvent[2]) | grepl("timeout", HomeEvent[2]))), Seconds[2], StartPossTime),
     TimeoutAnytime = sum((grepl("timeout", AwayEvent) | grepl("timeout", HomeEvent))) > 0,
     LastTimeoutTime = first(LastTimeoutTime)
   ) %>%
@@ -231,7 +229,6 @@ df <- df %>%
 
 # we will remove poss where timeout was called but not initially. these are hard to assess bc maybe the player was falling out of bounds or it was late in shot clock
 df <- filter(df, TimeoutCalledInitially | (!TimeoutAnytime ), EndPossTime < StartPossTime)
-df <- filter(df, is.na(HomeTeamTimeout) | ((!(!HomePoss & HomeTeamTimeout)) & (!(HomePoss & !HomeTeamTimeout))))
 
 ```
 
@@ -240,7 +237,7 @@ df <- filter(df, is.na(HomeTeamTimeout) | ((!(!HomePoss & HomeTeamTimeout)) & (!
 # filter to only start poss less than 24
 df <- filter(df, StartPossTime <= 24 & StartPossTime>=0)
 # time bins
-time_bins <- seq(0, 24, by = 4)
+time_bins <- seq(0, 24, by = 6)
 df$TimeBins <- cut(df$StartPossTime, breaks = time_bins, include.lowest = TRUE)
 # valid scores
 acceptable_score_diffs <- c(0, -1, -2)
@@ -257,8 +254,6 @@ summary_df <- df %>%
     TimeBins = first(TimeBins),
     PossTeamWin = first(PossTeamWin),
     TimeoutCalledInitially = first(TimeoutCalledInitially),
-    HomeTeamTimeout = first(HomeTeamTimeout),
-    StartPossTime = first(StartPossTime),
     StartTmScore = first(StartTmScore),
     StartOppScore = first(StartOppScore),
     StartTmPtsPerPoss = first(StartTmPtsPerPoss),
@@ -267,9 +262,7 @@ summary_df <- df %>%
     IsPlayoffs = first(IsPlayoffs),
     StartEvent = first(StartEvent),
     SecondsSinceLastTimeout = first(SecondsSinceLastTimeout),
-    ScoreDiffLastMinute = first(ScoreDiffLastMinute),
-    TimeoutTime = first(TimeoutTime),
-    Period = first(Period)
+    ScoreDiffLastMinute = first(ScoreDiffLastMinute)
   ) %>%
   ungroup() 
 
@@ -298,7 +291,7 @@ home_off <- filter(off_def_ratings) %>%
     def_rating = mean(def_rating[!is_home]),
   ) %>%
   ungroup()
-away_off <- filter(off_def_ratings, !is_home) %>%
+away_off <- filter(off_def_ratings) %>%
   group_by(ESPNGameID) %>%
   summarise(
     off_rating = mean(off_rating[!is_home]),

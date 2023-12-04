@@ -1,0 +1,124 @@
+---
+title: "Causal_analysis"
+author: "Johannes Fuest"
+date: "12/2/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read data and add correct defensive rating to df
+```{r outcome regression}
+df1 <- read.csv('data_with_to_info.csv')
+names(df1)[names(df1) == "def_rating"] <- "def_rating_old"
+names(df1)[names(df1) == "TimeBins"] <- "TimeBins_old"
+df2 <- read.csv('poss_summary.csv')
+df1 <- merge(df1, df2[c("GameID", "def_rating", "Possession", "TimeBins")], by = c("GameID", "Possession"), all.x = TRUE)
+df1$def_rating_old <- NULL
+df1$TimeBins_old <- NULL
+#TO DO: unsure what this column is and why 33% of its values are null -> ask the squad
+df1$HomeTeamTimeout <- NULL
+df1 <- na.omit(df1)
+columns_to_keep <- c("StartPossScoreDiff","TimeBins","PossTeamWin","TimeoutCalledInitially","StartPossTime","StartTmScore","StartOppScore","StartTmPtsPerPoss","StartOppPtsPerPoss","HomePoss","IsPlayoffs","StartEvent","SecondsSinceLastTimeout","ScoreDiffLastMinute","TimeoutTime", "Period", "off_rating", "TimeoutRemaining", "def_rating")
+df1 <- df1[,columns_to_keep]
+df1$Period <- as.factor(df1$Period)
+```
+
+First up, we look at the basic diff-in-means:
+```{r}
+print(mean(df1[df1$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df1[df1$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+```
+Calling a timeout appears to have a marginally positive effect, but there is 
+only a .3% difference in means. It looks like not much is going on. 
+
+Next, we split up by bins of seconds left, which is known to make an enormous 
+difference and repeat our calculation.
+```{r}
+df_0to6 <- df1[df1$TimeBins == '[0,6]',]
+df_6to12 <- df1[df1$TimeBins == '(6,12]',]
+df_12to24 <- df1[(df1$TimeBins != '[0,6]' & df1$TimeBins != '(6,12]'),]
+print(mean(df_0to6[df_0to6$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6[df_0to6$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_6to12[df_6to12$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12[df_6to12$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_12to24[df_12to24$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24[df_12to24$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+
+```
+Here we can already see that the effect can change direction based on seconds left
+
+Next, we split up by bins of seconds left, which is known to make an enormous 
+difference and repeat our calculation.
+
+```{r}
+df_0to6_live <- df_0to6[df_0to6$StartEvent == "Live Ball Turnover",]
+df_0to6_drb <- df_0to6[df_0to6$StartEvent == "Drb",]
+df_0to6_dead <- df_0to6[df_0to6$StartEvent != "Live Ball Turnover" & df_0to6$StartEvent != "Drb" ,]
+df_6to12_live <- df_6to12[df_6to12$StartEvent == "Live Ball Turnover",]
+df_6to12_drb <- df_6to12[df_6to12$StartEvent == "Drb",]
+df_6to12_dead <- df_6to12[df_6to12$StartEvent != "Live Ball Turnover" & df_6to12$StartEvent != "Drb" ,]
+df_12to24_live <- df_12to24[df_12to24$StartEvent == "Live Ball Turnover",]
+df_12to24_drb <- df_12to24[df_12to24$StartEvent == "Drb",]
+df_12to24_dead <- df_12to24[df_12to24$StartEvent != "Live Ball Turnover" & df_12to24$StartEvent != "Drb" ,]
+
+print(mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_0to6[df_0to6$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6[df_0to6$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_6to12_live[df_6to12_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12_live[df_6to12_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_6to12_drb[df_6to12_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12_drb[df_6to12_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_6to12[df_6to12$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12[df_6to12$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_12to24_live[df_12to24_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_live[df_12to24_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_12to24_drb[df_12to24_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_drb[df_12to24_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_12to24_dead[df_12to24_dead$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_dead[df_12to24_dead$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+```
+With the exception of possessions with more than 12 seconds remaining, we see that
+the sign of diff-in-means changes depending on event. With these meta_variables 
+in place, we can now begin estimating the true treatment effect of the timeout
+call holding constant our covariates. We will do this by using AIPW:
+
+1.) Esimate propensity scores using logistic regression. We will keep meta
+variables in model. #TODO: ask Dominik/TAs if this is fine (bias?) We also do not
+use Timeoutremaining here
+```{r}
+df_timeouts <- df1[df1$TimeoutRemaining == TRUE,]
+# not using starting scores and per minute scores to avoid multicollinearity (was getting N/A coef values)
+e_x <- glm(TimeoutCalledInitially ~ 1+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
+               StartOppPtsPerPoss+HomePoss+IsPlayoffs+StartEvent+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_timeouts, family = binomial)
+summary(e_x)
+```
+2.) Estimate outcome variable with logistic regression for each df
+```{r}
+# missing
+df_list <- list(df_0to6_live,df_0to6_drb, df_0to6_dead, df_6to12_live, df_6to12_drb, df_6to12_dead, df_12to24_live, df_12to24_drb, df_12to24_dead)
+model_list <- list()
+
+# Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
+for (i in 1:length(df_list)) {
+  
+  model_1 <- glm(PossTeamWin ~ 1+TimeoutCalledInitially+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
+               StartOppPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial)
+  model_0 <- glm(PossTeamWin ~ 1+TimeoutCalledInitially+StartPossScoreDiff+StartPossTime+StartTmPtsPerPoss+
+               StartOppPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial)
+  model_list[[i]] <- list(model_1, model_0)
+}
+```
+3.) Estimate $$\hat{\mu}^{adj}$$
+```{r}
+tau_aipws <- list()
+for (i in 1:length(df_list)) {
+  print(i)
+  df_temp <- df_list[[i]]
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - predict(model_list[[i]][[1]], df_temp, type = "response"))/predict(e_x, df_temp, type = "response")) +  predict(model_list[[i]][[1]], df_temp, type = "response"))
+  mu_hat_0 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - predict(model_list[[i]][[2]], df_temp, type = "response"))/predict(e_x, df_temp, type = "response")) +  predict(model_list[[i]][[2]], df_temp, type = "response"))
+  tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
+}
+print(tau_aipws)
+```
+#TO DO: discuss numbers with team, bootstrapping
+```{r}
+
+```
+
+
