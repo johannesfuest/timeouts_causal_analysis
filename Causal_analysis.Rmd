@@ -35,6 +35,7 @@ numeric_cols <- sapply(df1, is.numeric)
 df1[numeric_cols] <- scale(df1[numeric_cols])
 df1 <- df1[!duplicated(df1), ]
 ```
+#TODO: decide on scaling
 
 First up, we look at the basic diff-in-means:
 ```{r}
@@ -45,6 +46,7 @@ only a .3% difference in means. It looks like not much is going on.
 
 Next, we split up by bins of seconds left, which is known to make an enormous 
 difference and repeat our calculation.
+#TODO: decide on time binning
 ```{r}
 df_0to6 <- df1[df1$TimeBins == '[0,6]',]
 df_6to12 <- df1[df1$TimeBins == '(6,12]',]
@@ -133,8 +135,8 @@ for (i in 1:length(df_list)) {
 tau_aipws <- list()
 for (i in 1:length(df_list)) {
   df_temp <- df_list[[i]]
-  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - suppressWarnings(predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  suppressWarnings(predict(model_list[[i]][[1]], df_temp, type = "response")))
-  mu_hat_0 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - suppressWarnings(predict(model_list[[i]][[2]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) + suppressWarnings(predict(model_list[[i]][[2]], df_temp, type = "response")))
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  (predict(model_list[[i]][[1]], df_temp, type = "response")))
+  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], df_temp, type = "response")))/(1-predict(e_x, df_temp, type = "response"))) + (predict(model_list[[i]][[2]], df_temp, type = "response")))
   tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
 }
 print(tau_aipws)
@@ -167,7 +169,7 @@ for (j in 1:900){
     
     mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
     
-    mu_hat_0 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_0, bootstrapped_df, type = "response"))
+    mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/(1-predict(e_x, bootstrapped_df, type = "response"))) +  predict(model_0, bootstrapped_df, type = "response"))
     tau_boot[[(j%%9) + 1]][[(as.integer(j/9)%%100) + 1]] <- (mu_hat_1 - mu_hat_0)
 }
 ```
@@ -214,8 +216,7 @@ legend(
     pch = c(15, 16),
     bg = "white"
 )
-summa <- summarize.match(df_temp, ms.2)
-
+summa <- summarize.Match(df_temp, ms.2)
 }
 ```
 IV regression using TimeoutRemaining
@@ -266,10 +267,12 @@ for (i in 1:9) {
                  +off_rating+def_rating,
                data = df_list[[i]], family = binomial)
   #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
-  df_list[[i]]$TimeoutCalledInitially <- TRUE
-  preds_1 <- predict(model_2, df_list[[i]], type = "response")
-  df_list[[i]]$TimeoutCalledInitially <- FALSE
-  preds_0 <- predict(model_2, df_list[[i]], type = "response")
+  df_temp <- df_list[[i]]
+  df_temp$TimeoutCalledInitially <- TRUE
+  preds_1 <- predict(model_2, df_temp, type = "response")
+  
+  df_temp$TimeoutCalledInitially <- FALSE
+  preds_0 <- predict(model_2, df_temp, type = "response")
   tau_ivs[i] <- mean(preds_1 - preds_0)
 }
 print(tau_ivs)
