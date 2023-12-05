@@ -60,15 +60,25 @@ Next, we split up by bins of seconds left, which is known to make an enormous
 difference and repeat our calculation.
 
 ```{r}
+#resetting row names here so it doesn't mess with matching later
 df_0to6_live <- df_0to6[df_0to6$StartEvent == "Live Ball Turnover",]
+rownames(df_0to6_live)<- NULL
 df_0to6_drb <- df_0to6[df_0to6$StartEvent == "Drb",]
+rownames(df_0to6_drb)<- NULL
 df_0to6_dead <- df_0to6[df_0to6$StartEvent != "Live Ball Turnover" & df_0to6$StartEvent != "Drb" ,]
+rownames(df_0to6_dead)<- NULL
 df_6to12_live <- df_6to12[df_6to12$StartEvent == "Live Ball Turnover",]
+rownames(df_6to12_live)<- NULL
 df_6to12_drb <- df_6to12[df_6to12$StartEvent == "Drb",]
+rownames(df_6to12_drb)<- NULL
 df_6to12_dead <- df_6to12[df_6to12$StartEvent != "Live Ball Turnover" & df_6to12$StartEvent != "Drb" ,]
+rownames(df_6to12_dead)<- NULL
 df_12to24_live <- df_12to24[df_12to24$StartEvent == "Live Ball Turnover",]
+rownames(df_12to24_live)<- NULL
 df_12to24_drb <- df_12to24[df_12to24$StartEvent == "Drb",]
+rownames(df_12to24_drb)<- NULL
 df_12to24_dead <- df_12to24[df_12to24$StartEvent != "Live Ball Turnover" & df_12to24$StartEvent != "Drb" ,]
+rownames(df_12to24_dead)<- NULL
 
 print(mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
 print(mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
@@ -172,7 +182,7 @@ for (i in 1:9) {
 }
 
 ```
-Some of our taus are not zero. More analysis later: 
+Some of our taus are not zero. More analysis later.
 
 Next: matched pairs design:
 ```{r}
@@ -182,37 +192,90 @@ library(optmatch)
 library(plyr)
 library(rcbalance)
 ```
+
 ```{r}
-plot(xBalance(fmla=TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating, data=df1))
-```
-There are large differences in covariates between treatment and control groups.
-This is also reflected in different propensity score distributions
-```{r}
-df1$prop <- predict(e_x, df1, type = "response")
-ggplot(data=df1, aes(x=prop, group=as.factor(TimeoutCalledInitially),
+
+for(i in 1:9){
+  df_temp <- df_list[[i]]
+  df1$prop <- predict(e_x, df1, type = "response")
+ggplot(data=df_temp, aes(x=prop, group=as.factor(TimeoutCalledInitially),
 fill=as.factor(TimeoutCalledInitially))) + geom_density(alpha=0.5) + theme_bw()
-```
-```{r}
-mat.2 <- smahal(df1$TimeoutCalledInitially,df1[,c("StartPossTime","StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs","SecondsSinceLastTimeout","ScoreDiffLastMinute","off_rating","def_rating")])
-ms.2 <- pairmatch(mat.2, data=df1)
+  mat.1 <- smahal(df_temp$TimeoutCalledInitially, df_temp[,c("StartPossTime","StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs","SecondsSinceLastTimeout","ScoreDiffLastMinute","off_rating","def_rating")])
+ms.2 <- pairmatch(mat.1, data=df_temp)
 plot(xBalance(TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
                  +off_rating+def_rating,
 strata=list(unstrat=NULL, ms.2=~ms.2),
-data=df1))
+data=df_temp))
 legend(
     "topright",
-    legend = c("unstrat", "ms.2"),
+    legend = c("Pre matching", "Post Matching"),
     inset = 0.01,
     pch = c(15, 16),
     bg = "white"
 )
+summa <- summarize.match(df_temp, ms.2)
+
+}
 ```
-Shelving matching for now and moving on to IV regression using TimeoutRemaining
+IV regression using TimeoutRemaining
 as an instrumental variable:
 ```{r}
-
+print(cor(df1$TimeoutRemaining, df1$TimeoutCalledInitially))
 ```
+Correlation between our instrument and treatment are high. 
+
+```{r}
+library(AER)
+regs <- list()
+for (i in 1:9) {
+  result <- ivreg(PossTeamWin ~ TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating|TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating, data = df_list[[i]])
+  regs[[i]] <- summary(result)
+  
+}
+
+for (i in 1:9) {
+  reg <- regs[[i]]
+  alpha <- 0.05
+  lower_bound <- coef(reg)[2] - 1.96*reg$coefficients[2, "Std. Error"]
+  upper_bound <- coef(reg)[2] + 1.96*reg$coefficients[2, "Std. Error"]
+  conf_interval <- c(lower_bound, upper_bound)
+  print(conf_interval)
+}
+```
+These numbers are nonsensical, need to do IVreg with logistic regressions (2SRI):
+#TODO: discuss 2SRI with Dominic
+```{r}
+tau_ivs <- numeric(9)
+for (i in 1:9) {
+  #1. perform log regression of timeoutcalled on covariates and instrument
+  model_1 <- glm(TimeoutCalledInitially ~ TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = df_list[[i]], family = binomial)
+  
+  #2. generate predictions of timeoutcalled. 
+  df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
+  #3. Perform second log. regression of TeamPossWon on predicted Timeout and covariates
+  model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = df_list[[i]], family = binomial)
+  #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
+  df_list[[i]]$TimeoutCalledInitially <- TRUE
+  preds_1 <- predict(model_2, df_list[[i]], type = "response")
+  df_list[[i]]$TimeoutCalledInitially <- FALSE
+  preds_0 <- predict(model_2, df_list[[i]], type = "response")
+  tau_ivs[i] <- mean(preds_1 - preds_0)
+}
+print(tau_ivs)
+```
+Some of these numbers are suspiciously large. But this could point to the fact
+that our analysis is dampened by many unobserved confounders
+
+#TODO: derive CIs for this
 
