@@ -1,0 +1,568 @@
+---
+title: "Causal_analysis"
+author: "Johannes Fuest"
+date: "12/2/2023"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("utility(1).R")
+```
+
+## Read data and add correct defensive rating to df
+```{r outcome regression}
+df1 <- read.csv('data_with_to_info(2).csv')
+names(df1)[names(df1) == "def_rating"] <- "def_rating_old"
+names(df1)[names(df1) == "TimeBins"] <- "TimeBins_old"
+df2 <- read.csv('poss_summary(2).csv')
+df1 <- merge(df1, df2[c("GameID", "def_rating", "Possession", "TimeBins")], by = c("GameID", "Possession"), all.x = TRUE)
+df1$def_rating_old <- NULL
+df1$TimeBins_old <- NULL
+#TO DO: unsure what this column is and why 33% of its values are null -> ask the squad
+df1$HomeTeamTimeout <- NULL
+df1 <- na.omit(df1)
+# having both own and opp ptsperposs in causes multicollinearity (corr .99) -> keep only own
+#keeping StartPossScoreDiff and StartTmScore and StartOppScore not possible due to multicollinearity -> keep only StartPossScorediff
+#keeping period messes with regressions due to unseen levels in factor
+
+columns_to_keep <- c("TimeBins","StartEvent","PossTeamWin","TimeoutCalledInitially",
+                     "StartPossTime", "StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs",
+                     "SecondsSinceLastTimeout","ScoreDiffLastMinute", 
+                     "off_rating", "def_rating", "TimeoutRemaining")
+
+df1 <- df1[,columns_to_keep]
+numeric_cols <- sapply(df1, is.numeric)
+# df1[numeric_cols] <- scale(df1[numeric_cols])
+df1 <- df1[!duplicated(df1), ]
+
+# removing poss time <3
+df1 <- df1[df1$StartPossTime>=3,]
+df1$TimeBins <- cut(df1$StartPossTime, breaks = c(3,8,24), include.lowest = TRUE)
+```
+#TODO: decide on scaling
+
+First up, we look at the basic diff-in-means:
+```{r}
+print(mean(df1[df1$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df1[df1$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+```
+Calling a timeout appears to have a marginally positive effect, but there is 
+only a .3% difference in means. It looks like not much is going on. 
+
+Next, we split up by bins of seconds left, which is known to make an enormous 
+difference and repeat our calculation.
+#TODO: decide on time binning
+```{r}
+df_3to8 <- df1[df1$TimeBins == '[3,8]',]
+df_8to24 <- df1[df1$TimeBins != '[3,8]',]
+print(mean(df_3to8[df_3to8$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8[df_3to8$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24[df_8to24$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24[df_8to24$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+
+```
+Here we can already see that the effect can change direction based on seconds left
+
+Next, we split up by bins of seconds left, which is known to make an enormous 
+difference and repeat our calculation.
+
+```{r}
+#resetting row names here so it doesn't mess with matching later
+df_3to8_live <- df_3to8[df_3to8$StartEvent == "Live Ball Turnover",]
+rownames(df_3to8_live)<- NULL
+df_3to8_drb <- df_3to8[df_3to8$StartEvent == "Drb",]
+rownames(df_3to8_drb)<- NULL
+df_3to8_dead <- df_3to8[df_3to8$StartEvent != "Live Ball Turnover" & df_3to8$StartEvent != "Drb" ,]
+rownames(df_3to8_dead)<- NULL
+df_8to24_live <- df_8to24[df_8to24$StartEvent == "Live Ball Turnover",]
+rownames(df_8to24_live)<- NULL
+df_8to24_drb <- df_8to24[df_8to24$StartEvent == "Drb",]
+rownames(df_8to24_drb)<- NULL
+df_8to24_dead <- df_8to24[df_8to24$StartEvent != "Live Ball Turnover" & df_8to24$StartEvent != "Drb" ,]
+rownames(df_8to24_dead)<- NULL
+
+print(mean(df_3to8_live[df_3to8_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8_live[df_3to8_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_3to8_drb[df_3to8_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8_drb[df_3to8_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_3to8[df_3to8$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8[df_3to8$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+
+print(mean(df_8to24_live[df_8to24_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_live[df_8to24_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24_drb[df_8to24_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_drb[df_8to24_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24_dead[df_8to24_dead$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_dead[df_8to24_dead$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+```
+With the exception of possessions with more than 12 seconds remaining, we see that
+the sign of diff-in-means changes depending on event. With these meta_variables 
+in place, we can now begin estimating the true treatment effect of the timeout
+call holding constant our covariates. We will do this by using AIPW:
+
+1.) Esimate propensity scores using logistic regression. We will keep meta
+variables in model. #TODO: ask Dominik/TAs if this is fine (bias?) We also do not
+use Timeoutremaining here
+```{r}
+# Use only TimeoutRemaining == TRUE data for propensity score estimation
+df_timeouts <- df1[df1$TimeoutRemaining == TRUE,]
+# not using starting scores and per minute scores to avoid multicollinearity (was getting N/A coef values)
+e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_timeouts, family = binomial)
+summary(e_x)
+```
+2.) Estimate outcome variable with logistic regression for each df
+```{r}
+# missing
+df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
+model_list <- list()
+
+# Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
+for (i in 1:length(df_list)) {
+  
+  model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial)
+  model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial)
+  model_list[[i]] <- list(model_1, model_0)
+}
+```
+3.) Estimate $$\hat{\mu}^{adj}$$
+```{r}
+tau_aipws <- list()
+for (i in 1:length(df_list)) {
+  df_temp <- df_list[[i]]
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  (predict(model_list[[i]][[1]], df_temp, type = "response")))
+  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], df_temp, type = "response")))/(1-predict(e_x, df_temp, type = "response"))) + (predict(model_list[[i]][[2]], df_temp, type = "response")))
+  tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
+}
+print(tau_aipws)
+```
+Next, we use the bootstrap to estimate the variance of our AIPW taus
+Question: how to bootstrap when model must be re-estimated each time?
+```{r}
+tau_boot1 <- list()
+tau_boot2 <- list()
+tau_boot3 <- list()
+tau_boot4 <- list()
+tau_boot5 <- list()
+tau_boot6 <- list()
+tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6)
+for (j in 1:1200){
+    bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]])*0.9, replace = FALSE), ]
+    
+    model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial)
+    
+    model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial)
+    
+    mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
+    
+    mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/(1-predict(e_x, bootstrapped_df, type = "response"))) +  predict(model_0, bootstrapped_df, type = "response"))
+    tau_boot[[(j%%6) + 1]][[(as.integer(j/6)%%200) + 1]] <- (mu_hat_1 - mu_hat_0)
+}
+```
+This gives us CIs for all of our taus for AIPW:
+```{r}
+for (i in 1:6) {
+  alpha <- 0.05
+  lower_bound <- sort(unlist(tau_boot[[i]]))[[5]]
+  upper_bound <- sort(unlist(tau_boot[[i]]))[[195]]
+  conf_interval <- c(lower_bound, upper_bound)
+  print(conf_interval)
+}
+
+```
+Some of our taus are not zero. More analysis later.
+
+Next: matched pairs design:
+
+```{r}
+library(DOS2)
+library(RItools)
+library(optmatch)
+library(plyr)
+library(dplyr)
+library(rcbalance)
+```
+
+---------------------------------------------------------------------------------------
+
+```{r}
+names(df_list) <- c("3 to 8, live ball", 
+                    "3 to 8, def rebound",
+                    "3 to 8, dead ball", 
+                    "8 to 24, live ball",
+                    "8 to 24, def rebound",
+                    "8 to 24, dead ball")
+
+df1 <- df1 %>% 
+  dplyr::mutate(StartEventBin = dplyr::case_when(
+    StartEvent == "Drb" ~ "Drb",
+    StartEvent == "Live Ball Turnover" ~ "Live",
+    .default = "Dead"
+  ))
+```
+
+Starting with full-data matching and working down towards forcing matches on the meta-variables. If that doesn't work, will look at matching within each combo-of-meta-variables subset.
+
+```{r}
+df1$propensity_hat <- predict(e_x, df1, type = "response")
+
+ggplot(data = df1, aes(x = propensity_hat, 
+                            group = TimeoutCalledInitially, 
+                            fill = TimeoutCalledInitially)) + 
+  geom_density(alpha = 0.5) + 
+  theme_bw() + 
+  labs(title = "Prop-hat densities, all obs", 
+       x = "Est. propensity score", 
+       y = "Density", 
+       fill = "Group") + 
+  scale_fill_discrete(name = "TO Called")
+
+ggplot(data = subset(df1, TimeoutRemaining), 
+       aes(x = propensity_hat, group = TimeoutCalledInitially, fill = TimeoutCalledInitially)) + 
+  geom_density(alpha = 0.5) + 
+  theme_bw() + 
+  labs(title = "Prop-hat densities, with timeout remaining", 
+       x = "Est. propensity score", 
+       y = "Density", 
+       fill = "Group") + 
+  scale_fill_discrete(name = "TO Called")
+```
+
+```{r}
+match_formula <- formula(TimeoutCalledInitially ~ 
+                                     StartEvent + StartPossTime + StartPossScoreDiff + 
+                                     StartTmPtsPerPoss + HomePoss + IsPlayoffs + 
+                                     SecondsSinceLastTimeout + ScoreDiffLastMinute + 
+                                     off_rating + def_rating)
+
+distance_matching_matrix <- optmatch::match_on(match_formula, 
+                                   data = df1, 
+                                   method = "mahalanobis",
+                                   caliper = NULL)
+
+distance_matching <- optmatch::pairmatch(distance_matching_matrix, data = df1)
+
+plot(RItools::xBalance(match_formula, 
+              strata = list(unstrat = NULL, distance_matching = ~ distance_matching), 
+              data = df1), 
+  ggplot = TRUE) +
+  labs(title = "Changes in std. covariate differences, no caliper", 
+       x = "Standardized difference, no-caliper matching", 
+       y = "Variable")
+
+sum(!is.na(distance_matching)) / 2 # number of pairs
+```
+
+```{r}
+avg_and_max_e_hat_diffs <- function(data, pairs_var) {
+  # given a data frame and a pairing variable containing matches, 
+  # print average and max absolute differences in propensity scores across pairs
+  
+  grouped <- data %>% 
+    dplyr::filter(!is.na({{pairs_var}})) %>% # keep only matched observations
+    dplyr::group_by({{pairs_var}}) %>% # group by pair
+    dplyr::summarise(smaller_pair_est_prop_score = min(propensity_hat), 
+                     larger_pair_est_prop_score = max(propensity_hat), 
+                     abs_diff_est_prop_score = 
+                       larger_pair_est_prop_score - smaller_pair_est_prop_score)
+
+  mean_absdiff_i <- mean(grouped$abs_diff_est_prop_score)
+  print(paste0("The average absolute difference in estimated propensity scores ",
+               "within matched pairs is ", round(mean_absdiff_i, 4), "."))
+  
+  max_absdiff_i <- max(grouped$abs_diff_est_prop_score)
+  print(paste0("The maximum absolute difference in estimated propensity scores ",
+               "within matched pairs is ", round(max_absdiff_i, 4), "."))
+}
+
+df1$no_caliper_pair <- as.character(distance_matching)
+avg_and_max_e_hat_diffs(df1, no_caliper_pair)
+```
+
+```{r}
+caliper_matching_matrix <- DOS2::addcaliper(distance_matching_matrix, 
+                                   z = df1$TimeoutCalledInitially, 
+                                   p = df1$propensity_hat, 
+                                   caliper = .1)
+
+caliper_matching <- optmatch::pairmatch(caliper_matching_matrix, data = df1)
+
+plot(RItools::xBalance(match_formula, 
+              strata = list(unstrat = NULL, caliper_matching = ~ caliper_matching), 
+              data = df1), 
+  ggplot = TRUE) +
+  labs(title = "Changes in std. covariate differences, caliper", 
+       x = "Standardized difference, caliper matching", 
+       y = "Variable")
+
+df1$caliper_pair <- as.character(caliper_matching)
+avg_and_max_e_hat_diffs(df1, caliper_pair)
+```
+
+```{r}
+force_match_time_and_start_matrix <- DOS2::addalmostexact(caliper_matching_matrix, 
+  z = df1$TimeoutCalledInitially, f = df1$TimeBins, mult = 5) %>% 
+  DOS2::addalmostexact(z = df1$TimeoutCalledInitially, f = df1$StartEventBin, mult = 5)
+
+force_time_and_start_matches <- optmatch::pairmatch(force_match_time_and_start_matrix, 
+                                         data = df1, 
+                                         remove.unmatchables = TRUE)
+
+match_formula_with_forcing_vars <- formula(TimeoutCalledInitially ~ 
+                                     StartEvent + StartPossTime + StartPossScoreDiff + 
+                                     StartTmPtsPerPoss + HomePoss + IsPlayoffs + 
+                                     SecondsSinceLastTimeout + ScoreDiffLastMinute + 
+                                     off_rating + def_rating + TimeBins + StartEventBin)
+
+plot(RItools::xBalance(match_formula_with_forcing_vars, 
+              strata = list(unstrat = NULL, 
+                force_time_and_start_matches = ~ force_time_and_start_matches), 
+              data = df1), 
+  ggplot = TRUE) +
+  labs(title = "Std. cov. diffs., caliper, force-matched", 
+       x = "Std. diff., caliper force-matching", 
+       y = "Variable")
+```
+
+Even with DOS2::addalmostexact, we don't get exact matches on the time bin and the event start type (standardized differences not exactly 0). Assuming our results will always be stratified by those groups (and we're not interested in an overall tau-hat), exact matching would be preferable. As a result, looking at subsetting the data into those six subsets, then matching within each:
+
+```{r}
+match_formula_subset <- formula(TimeoutCalledInitially ~ 
+                                     StartPossTime + StartPossScoreDiff + 
+                                     StartTmPtsPerPoss + HomePoss + IsPlayoffs + 
+                                     SecondsSinceLastTimeout + ScoreDiffLastMinute + 
+                                     off_rating + def_rating)
+
+for (i in 1:6) {
+  grp <- names(df_list)[i]
+  df_subset <- df_list[[i]]
+  df_subset$propensity_hat <- predict(e_x, df_subset, type = "response")
+  
+  distance_matching_matrix_subset <- optmatch::match_on(match_formula_subset, 
+                                   data = df_subset, 
+                                   method = "mahalanobis",
+                                   caliper = NULL)
+
+  distance_matching_subset <- optmatch::pairmatch(distance_matching_matrix_subset, data = df_subset)
+  
+  print(plot(RItools::xBalance(match_formula_subset, 
+                strata = list(unstrat = NULL, distance_matching_subset = ~ distance_matching_subset), 
+                data = df_subset), 
+    ggplot = TRUE) +
+    labs(title = paste0(grp, " -- no caliper"), 
+         x = "Standardized difference, no-caliper matching", 
+         y = "Variable"))
+  
+  print(paste0("Number of matches, ", grp, ": ", sum(!is.na(distance_matching_subset)) / 2))
+  df_subset$no_caliper_pair <- as.character(distance_matching_subset)
+  avg_and_max_e_hat_diffs(df_subset, no_caliper_pair)
+}
+```
+
+Not ideal. If we add a caliper and focus on propensity-score matching, do the covariates wind up being close enough for the interpretability of matching as a process to still be a major benefit in our case?
+
+```{r}
+for (i in 1:6) {
+  grp <- names(df_list)[i]
+  df_subset <- df_list[[i]]
+  df_subset$propensity_hat <- predict(e_x, df_subset, type = "response")
+  
+  distance_matching_matrix_subset <- optmatch::match_on(match_formula_subset, 
+                                   data = df_subset, 
+                                   method = "mahalanobis",
+                                   caliper = NULL)
+
+  caliper_matching_matrix_subset <- DOS2::addcaliper(distance_matching_matrix_subset, 
+                                     z = df_subset$TimeoutCalledInitially, 
+                                     p = df_subset$propensity_hat, 
+                                     caliper = .05)
+  
+  caliper_matching_subset <- optmatch::pairmatch(caliper_matching_matrix_subset, data = df_subset)
+  
+  print(plot(RItools::xBalance(match_formula_subset, 
+                strata = list(unstrat = NULL, caliper_matching_subset = ~ caliper_matching_subset), 
+                data = df_subset), 
+    ggplot = TRUE) +
+    labs(title = paste0(grp, " -- caliper"), 
+         x = "Standardized difference, caliper matching", 
+         y = "Variable"))
+  
+  print(paste0(grp, ", caliper-matching details:"))
+  df_subset$caliper_pair <- as.character(caliper_matching_subset)
+  avg_and_max_e_hat_diffs(df_subset, caliper_pair)
+    
+  # FRT analysis for p-value
+  df_subset$pair <- as.numeric(caliper_matching_subset)
+  df_subset_2 <- df_subset %>% 
+    dplyr::filter(!is.na(pair)) %>% 
+    dplyr::group_by(pair) %>% 
+    dplyr::summarise(y_control = c(PossTeamWin[which(TimeoutCalledInitially == 0)]), 
+                     y_treatment = c(PossTeamWin[which(TimeoutCalledInitially == 1)]))
+  
+  n_pairs <- nrow(df_subset_2)
+  tau_hat <- sum(df_subset_2$y_treatment - df_subset_2$y_control) / n_pairs
+  
+  set.seed(0)
+  total_runs <- 20000
+  tau_hats_FRT <- rep(NA, total_runs)
+  for (i in 1:total_runs) {
+    data_run <- df_subset_2
+    data_run$swap <- rbinom(n = n_pairs, size = 1, prob = .5)
+    
+    data_run$y_control <- df_subset_2$y_control * (1 - data_run$swap) + 
+      df_subset_2$y_treatment * data_run$swap
+    
+    data_run$y_treatment <- df_subset_2$y_treatment * (1 - data_run$swap) + 
+      df_subset_2$y_control * data_run$swap
+    
+    pi_k <- 1 / n_pairs # true for all "strata," since each straum is a pair
+    tau_hats_FRT[i] <-  sum(pi_k * (data_run$y_treatment - data_run$y_control))
+  }
+  
+  print(paste0("Tau-hat-matching: ", round(tau_hat, 4)))
+  if (tau_hat < 0) {
+    p_val_subset <- sum(tau_hats_FRT < tau_hat) / length(tau_hats_FRT)
+  } else {
+    p_val_subset <- sum(tau_hats_FRT > tau_hat) / length(tau_hats_FRT)
+  }
+  print(paste0("P-value from the FRT: ", round(p_val_subset, 4)))
+  
+  print("-----")
+}
+```
+
+Ehh. Not too excited about it. And even when using one-sided FRTs, we'd only reject for the first group, which has the largest absolute "matching" tau-hat. (Four out of the six confidence intervals from AIPW didn't include 0.)
+
+Going back to full-data matching and trying to force on the meta-variables (might wind up being the same matches, but the full-data picture on the covariates makes for a better story, if we can get the meta-variables right):
+
+```{r}
+force_match_time_and_start_matrix <- DOS2::addalmostexact(caliper_matching_matrix, 
+  z = df1$TimeoutCalledInitially, f = df1$TimeBins, mult = 6) %>% 
+  DOS2::addalmostexact(z = df1$TimeoutCalledInitially, f = df1$StartEventBin, mult = 6)
+
+# force_time_and_start_matches <- optmatch::pairmatch(force_match_time_and_start_matrix, 
+#                                          data = df1, 
+#                                          remove.unmatchables = TRUE)
+```
+
+In our case, if mult is over 5 (leading to a total mult over 25 for some obs), optmatch::pairmatch doesn't converge. Overall takeaway -- we can use matching if we want, but the covariate balances aren't ideal from an interpretability standpoint (despite the mathematical thumbs-up of pretty good propensity-score matching).
+
+---------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+for (i in 1:6) {
+  df_subset <- df_list[[i]]
+  df_subset$prop <- predict(e_x, df_temp, type = "response")
+ggplot(data=df_temp, aes(x=prop, group=as.factor(TimeoutCalledInitially),
+fill=as.factor(TimeoutCalledInitially))) + geom_density(alpha=0.5) + theme_bw()
+  mat.1 <- smahal(df_temp$TimeoutCalledInitially, df_temp[,c("StartPossTime","StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs","SecondsSinceLastTimeout","ScoreDiffLastMinute","off_rating","def_rating")])
+ms.2 <- pairmatch(mat.1, data=df_temp)
+plot(xBalance(TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+strata=list(unstrat=NULL, ms.2=~ms.2),
+data=df_temp))
+legend(
+    "topright",
+    legend = c("Pre matching", "Post Matching"),
+    inset = 0.01,
+    pch = c(15, 16),
+    bg = "white"
+)
+# summa <- summarize.Match(df_temp, ms.2)
+# TODO: fix matching 
+}
+```
+IV regression using TimeoutRemaining
+as an instrumental variable:
+```{r}
+print(cor(df1$TimeoutRemaining, df1$TimeoutCalledInitially))
+```
+Correlation between our instrument and treatment are high. 
+
+```{r}
+library(AER)
+regs <- list()
+for (i in 1:6) {
+  result <- ivreg(PossTeamWin ~ TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating|TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating, data = df_list[[i]])
+  regs[[i]] <- summary(result)
+  
+}
+
+for (i in 1:6) {
+  reg <- regs[[i]]
+  alpha <- 0.05
+  lower_bound <- coef(reg)[2] - 1.96*reg$coefficients[2, "Std. Error"]
+  upper_bound <- coef(reg)[2] + 1.96*reg$coefficients[2, "Std. Error"]
+  conf_interval <- c(lower_bound, upper_bound)
+  print(conf_interval)
+}
+```
+These numbers are nonsensical, need to do IVreg with logistic regressions (2SRI):
+#TODO: discuss 2SRI with Dominic
+```{r}
+tau_ivs <- numeric(6)
+for (i in 1:6) {
+  #1. perform log regression of timeoutcalled on covariates and instrument
+  model_1 <- glm(TimeoutCalledInitially ~ SecondsSinceLastTimeout +StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss +HomePoss+IsPlayoffs+ScoreDiffLastMinute+off_rating+def_rating, data = df_list[[i]], family = "binomial")
+  
+  #2. generate predictions of timeoutcalled. 
+  df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
+  #3. Perform second log. regression of TeamPossWon on predicted Timeout and covariates
+  model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = df_list[[i]], family =binomial(link="logit"))
+  
+  # exogeneity test
+  print("exogeneity")
+  print(cor(resid(glm(PossTeamWin ~ SecondsSinceLastTimeout + TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = df_list[[i]], family =binomial(link="logit"))), df_list[[i]]$SecondsSinceLastTimeout))
+  # relevance test
+  print("relevance: ")
+  print(cor(df_list[[i]]$SecondsSinceLastTimeout, df_list[[i]]$TimeoutCalledInitially))
+  #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
+  df_temp <- df_list[[i]]
+  df_temp$TimeoutCalledInitially <- TRUE
+  preds_1 <- predict(model_2, df_temp, type = "response")
+  
+  df_temp$TimeoutCalledInitially <- FALSE
+  preds_0 <- predict(model_2, df_temp, type = "response")
+  tau_ivs[i] <- mean(preds_1 - preds_0)
+}
+print(tau_ivs)
+```
+Some of these numbers are suspiciously large. But this could point to the fact
+that our analysis is dampened by many unobserved confounders
+
+#TODO: derive CIs for this
+
