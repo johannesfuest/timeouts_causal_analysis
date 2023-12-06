@@ -32,8 +32,12 @@ columns_to_keep <- c("TimeBins","StartEvent","PossTeamWin","TimeoutCalledInitial
 
 df1 <- df1[,columns_to_keep]
 numeric_cols <- sapply(df1, is.numeric)
-df1[numeric_cols] <- scale(df1[numeric_cols])
+# df1[numeric_cols] <- scale(df1[numeric_cols])
 df1 <- df1[!duplicated(df1), ]
+
+# removing poss time <3
+df1 <- df1[df1$StartPossTime>=3,]
+df1$TimeBins <- cut(df1$StartPossTime, breaks = c(3,8,24), include.lowest = TRUE)
 ```
 #TODO: decide on scaling
 
@@ -48,12 +52,10 @@ Next, we split up by bins of seconds left, which is known to make an enormous
 difference and repeat our calculation.
 #TODO: decide on time binning
 ```{r}
-df_0to6 <- df1[df1$TimeBins == '[0,6]',]
-df_6to12 <- df1[df1$TimeBins == '(6,12]',]
-df_12to24 <- df1[(df1$TimeBins != '[0,6]' & df1$TimeBins != '(6,12]'),]
-print(mean(df_0to6[df_0to6$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6[df_0to6$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_6to12[df_6to12$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12[df_6to12$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_12to24[df_12to24$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24[df_12to24$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+df_3to8 <- df1[df1$TimeBins == '[3,8]',]
+df_8to24 <- df1[df1$TimeBins != '[3,8]',]
+print(mean(df_3to8[df_3to8$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8[df_3to8$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24[df_8to24$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24[df_8to24$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
 
 ```
 Here we can already see that the effect can change direction based on seconds left
@@ -63,34 +65,26 @@ difference and repeat our calculation.
 
 ```{r}
 #resetting row names here so it doesn't mess with matching later
-df_0to6_live <- df_0to6[df_0to6$StartEvent == "Live Ball Turnover",]
-rownames(df_0to6_live)<- NULL
-df_0to6_drb <- df_0to6[df_0to6$StartEvent == "Drb",]
-rownames(df_0to6_drb)<- NULL
-df_0to6_dead <- df_0to6[df_0to6$StartEvent != "Live Ball Turnover" & df_0to6$StartEvent != "Drb" ,]
-rownames(df_0to6_dead)<- NULL
-df_6to12_live <- df_6to12[df_6to12$StartEvent == "Live Ball Turnover",]
-rownames(df_6to12_live)<- NULL
-df_6to12_drb <- df_6to12[df_6to12$StartEvent == "Drb",]
-rownames(df_6to12_drb)<- NULL
-df_6to12_dead <- df_6to12[df_6to12$StartEvent != "Live Ball Turnover" & df_6to12$StartEvent != "Drb" ,]
-rownames(df_6to12_dead)<- NULL
-df_12to24_live <- df_12to24[df_12to24$StartEvent == "Live Ball Turnover",]
-rownames(df_12to24_live)<- NULL
-df_12to24_drb <- df_12to24[df_12to24$StartEvent == "Drb",]
-rownames(df_12to24_drb)<- NULL
-df_12to24_dead <- df_12to24[df_12to24$StartEvent != "Live Ball Turnover" & df_12to24$StartEvent != "Drb" ,]
-rownames(df_12to24_dead)<- NULL
+df_3to8_live <- df_3to8[df_3to8$StartEvent == "Live Ball Turnover",]
+rownames(df_3to8_live)<- NULL
+df_3to8_drb <- df_3to8[df_3to8$StartEvent == "Drb",]
+rownames(df_3to8_drb)<- NULL
+df_3to8_dead <- df_3to8[df_3to8$StartEvent != "Live Ball Turnover" & df_3to8$StartEvent != "Drb" ,]
+rownames(df_3to8_dead)<- NULL
+df_8to24_live <- df_8to24[df_8to24$StartEvent == "Live Ball Turnover",]
+rownames(df_8to24_live)<- NULL
+df_8to24_drb <- df_8to24[df_8to24$StartEvent == "Drb",]
+rownames(df_8to24_drb)<- NULL
+df_8to24_dead <- df_8to24[df_8to24$StartEvent != "Live Ball Turnover" & df_8to24$StartEvent != "Drb" ,]
+rownames(df_8to24_dead)<- NULL
 
-print(mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_live[df_0to6_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6_drb[df_0to6_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_0to6[df_0to6$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_0to6[df_0to6$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_6to12_live[df_6to12_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12_live[df_6to12_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_6to12_drb[df_6to12_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12_drb[df_6to12_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_6to12[df_6to12$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_6to12[df_6to12$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_12to24_live[df_12to24_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_live[df_12to24_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_12to24_drb[df_12to24_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_drb[df_12to24_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
-print(mean(df_12to24_dead[df_12to24_dead$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_12to24_dead[df_12to24_dead$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_3to8_live[df_3to8_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8_live[df_3to8_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_3to8_drb[df_3to8_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8_drb[df_3to8_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_3to8[df_3to8$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_3to8[df_3to8$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+
+print(mean(df_8to24_live[df_8to24_live$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_live[df_8to24_live$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24_drb[df_8to24_drb$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_drb[df_8to24_drb$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
+print(mean(df_8to24_dead[df_8to24_dead$TimeoutCalledInitially == TRUE, ]$PossTeamWin) - mean(df_8to24_dead[df_8to24_dead$TimeoutCalledInitially == FALSE, ]$PossTeamWin))
 ```
 With the exception of possessions with more than 12 seconds remaining, we see that
 the sign of diff-in-means changes depending on event. With these meta_variables 
@@ -113,7 +107,7 @@ summary(e_x)
 2.) Estimate outcome variable with logistic regression for each df
 ```{r}
 # missing
-df_list <- list(df_0to6_live,df_0to6_drb, df_0to6_dead, df_6to12_live, df_6to12_drb, df_6to12_dead, df_12to24_live, df_12to24_drb, df_12to24_dead)
+df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
 model_list <- list()
 
 # Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
@@ -150,12 +144,9 @@ tau_boot3 <- list()
 tau_boot4 <- list()
 tau_boot5 <- list()
 tau_boot6 <- list()
-tau_boot7 <- list()
-tau_boot8 <- list()
-tau_boot9 <- list()
-tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6, tau_boot7, tau_boot8, tau_boot9)
-for (j in 1:900){
-    bootstrapped_df <- df_list[[(j%%9) + 1]][sample(nrow(df_list[[(j%%9) + 1]]), nrow(df_list[[(j%%9) + 1]])*0.99, replace = FALSE), ]
+tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6)
+for (j in 1:1200){
+    bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]])*0.9, replace = FALSE), ]
     
     model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
@@ -170,15 +161,15 @@ for (j in 1:900){
     mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
     
     mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/(1-predict(e_x, bootstrapped_df, type = "response"))) +  predict(model_0, bootstrapped_df, type = "response"))
-    tau_boot[[(j%%9) + 1]][[(as.integer(j/9)%%100) + 1]] <- (mu_hat_1 - mu_hat_0)
+    tau_boot[[(j%%6) + 1]][[(as.integer(j/6)%%200) + 1]] <- (mu_hat_1 - mu_hat_0)
 }
 ```
 This gives us CIs for all of our taus for AIPW:
 ```{r}
-for (i in 1:9) {
+for (i in 1:6) {
   alpha <- 0.05
-  lower_bound <- sort(unlist(tau_boot[[i]]))[[2]]
-  upper_bound <- sort(unlist(tau_boot[[i]]))[[98]]
+  lower_bound <- sort(unlist(tau_boot[[i]]))[[5]]
+  upper_bound <- sort(unlist(tau_boot[[i]]))[[195]]
   conf_interval <- c(lower_bound, upper_bound)
   print(conf_interval)
 }
@@ -197,7 +188,7 @@ library(rcbalance)
 
 ```{r}
 
-for(i in 1:9){
+for(i in 1:6){
   df_temp <- df_list[[i]]
   df1$prop <- predict(e_x, df1, type = "response")
 ggplot(data=df_temp, aes(x=prop, group=as.factor(TimeoutCalledInitially),
@@ -216,7 +207,8 @@ legend(
     pch = c(15, 16),
     bg = "white"
 )
-summa <- summarize.Match(df_temp, ms.2)
+# summa <- summarize.Match(df_temp, ms.2)
+# TODO: fix matching 
 }
 ```
 IV regression using TimeoutRemaining
@@ -229,7 +221,7 @@ Correlation between our instrument and treatment are high.
 ```{r}
 library(AER)
 regs <- list()
-for (i in 1:9) {
+for (i in 1:6) {
   result <- ivreg(PossTeamWin ~ TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
                  +off_rating+def_rating|TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
@@ -239,7 +231,7 @@ for (i in 1:9) {
   
 }
 
-for (i in 1:9) {
+for (i in 1:6) {
   reg <- regs[[i]]
   alpha <- 0.05
   lower_bound <- coef(reg)[2] - 1.96*reg$coefficients[2, "Std. Error"]
@@ -251,21 +243,28 @@ for (i in 1:9) {
 These numbers are nonsensical, need to do IVreg with logistic regressions (2SRI):
 #TODO: discuss 2SRI with Dominic
 ```{r}
-tau_ivs <- numeric(9)
-for (i in 1:9) {
+tau_ivs <- numeric(6)
+for (i in 1:6) {
   #1. perform log regression of timeoutcalled on covariates and instrument
-  model_1 <- glm(TimeoutCalledInitially ~ TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = df_list[[i]], family = binomial)
+  model_1 <- glm(TimeoutCalledInitially ~ SecondsSinceLastTimeout +StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss +HomePoss+IsPlayoffs+ScoreDiffLastMinute+off_rating+def_rating, data = df_list[[i]], family = "binomial")
   
   #2. generate predictions of timeoutcalled. 
   df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
   #3. Perform second log. regression of TeamPossWon on predicted Timeout and covariates
   model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
                  +off_rating+def_rating,
-               data = df_list[[i]], family = binomial)
+               data = df_list[[i]], family =binomial(link="logit"))
+  
+  # exogeneity test
+  print("exogeneity")
+  print(cor(resid(glm(PossTeamWin ~ SecondsSinceLastTimeout + TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
+                 +off_rating+def_rating,
+               data = df_list[[i]], family =binomial(link="logit"))), df_list[[i]]$SecondsSinceLastTimeout))
+  # relevance test
+  print("relevance: ")
+  print(cor(df_list[[i]]$SecondsSinceLastTimeout, df_list[[i]]$TimeoutCalledInitially))
   #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
   df_temp <- df_list[[i]]
   df_temp$TimeoutCalledInitially <- TRUE
