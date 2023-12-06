@@ -413,7 +413,7 @@ for (i in 1:6) {
   set.seed(0)
   total_runs <- 20000
   tau_hats_FRT <- rep(NA, total_runs)
-  for (i in 1:total_runs) {
+  for (j in 1:total_runs) {
     data_run <- df_subset_2
     data_run$swap <- rbinom(n = n_pairs, size = 1, prob = .5)
     
@@ -424,7 +424,7 @@ for (i in 1:6) {
       df_subset_2$y_control * data_run$swap
     
     pi_k <- 1 / n_pairs # true for all "strata," since each straum is a pair
-    tau_hats_FRT[i] <-  sum(pi_k * (data_run$y_treatment - data_run$y_control))
+    tau_hats_FRT[j] <-  sum(pi_k * (data_run$y_treatment - data_run$y_control))
   }
   
   print(paste0("Tau-hat-matching: ", round(tau_hat, 4)))
