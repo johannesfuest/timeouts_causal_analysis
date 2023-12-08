@@ -98,11 +98,12 @@ use Timeoutremaining here
 # Use only TimeoutRemaining == TRUE data for propensity score estimation
 df_timeouts <- df1[df1$TimeoutRemaining == TRUE,]
 # not using starting scores and per minute scores to avoid multicollinearity (was getting N/A coef values)
-# e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
-#            +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
-#            +ScoreDiffLastMinute+off_rating+def_rating,
-#              data = df_timeouts, family = binomial)
-# summary(e_x)
+e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_timeouts, family = binomial)
+summary(e_x)
+logLik(e_x)
 ```
 2.) Estimate outcome variable with logistic regression for each df
 ```{r}
@@ -131,22 +132,28 @@ for (i in 1:length(df_list)) {
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
                  +off_rating+def_rating, df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial, method = "rf", trControl = rfControl)
   
-e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
+e_x_temp <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
            +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
            +ScoreDiffLastMinute+off_rating+def_rating,
              data = df_list[[i]][df_list[[i]]$TimeoutRemaining==TRUE,], family = binomial)
   
   model_list[[i]] <- list(model_1, model_0)
-  e_x_list[[i]] <- e_x
+  e_x_list[[i]] <- e_x_temp
 }
+# log lik of separate prop scores
+log_lik_sum = 0
+for(i in 1:length(df_list)){
+  log_lik_sum = log_lik_sum + logLik(e_x_list[[i]])
+}
+print(log_lik_sum)
 ```
 3.) Estimate $$\hat{\mu}^{adj}$$
 ```{r}
 tau_aipws <- list()
 for (i in 1:length(df_list)) {
   df_temp <- df_list[[i]]
-  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))/predict(e_x_list[[i]], df_temp, type = "response")) +  (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))
-  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))/(1-predict(e_x_list[[i]], df_temp, type = "response"))) + (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))/predict(e_x, df_temp, type = "response")) +  (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))
+  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))/(1-predict(e_x, df_temp, type = "response"))) + (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))
   tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
 }
 print(tau_aipws)
@@ -163,10 +170,10 @@ tau_boot6 <- list()
 tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6)
 for (j in 1:1200){
     bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]]), replace = TRUE), ]
-    e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
-           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
-           +ScoreDiffLastMinute+off_rating+def_rating,
-             data = bootstrapped_df[bootstrapped_df$TimeoutRemaining==TRUE,], family = binomial)
+    # e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
+    #        +StartTmPtsPerPoss+HomePoss+SecondsSinceLastTimeout
+    #        +ScoreDiffLastMinute+off_rating+def_rating,
+    #          data = bootstrapped_df[bootstrapped_df$TimeoutRemaining==TRUE,], family = binomial)
     
       model_1 <-  train(as.factor(PossTeamWin) ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
