@@ -98,30 +98,46 @@ use Timeoutremaining here
 # Use only TimeoutRemaining == TRUE data for propensity score estimation
 df_timeouts <- df1[df1$TimeoutRemaining == TRUE,]
 # not using starting scores and per minute scores to avoid multicollinearity (was getting N/A coef values)
-e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
-           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
-           +ScoreDiffLastMinute+off_rating+def_rating,
-             data = df_timeouts, family = binomial)
-summary(e_x)
+# e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
+#            +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+#            +ScoreDiffLastMinute+off_rating+def_rating,
+#              data = df_timeouts, family = binomial)
+# summary(e_x)
 ```
 2.) Estimate outcome variable with logistic regression for each df
 ```{r}
 # missing
 df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
 model_list <- list()
+e_x_list <- list()
+
+# set up cv for RF
+  seeds <- vector("list", length = 6)
+for (j in 1:5) {
+  seeds[[j]] <- c(1,2,3)
+}
+seeds[[6]] <- c(1,2,3,4,5)
+  
+  # rfControl <- trainControl(method = "cv", number = 5, seeds=seeds)
+ rfControl <- trainControl(method = "none")
 
 # Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
 for (i in 1:length(df_list)) {
+  model_1 <-  train(as.factor(PossTeamWin) ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+                 +off_rating+def_rating, df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial, method = "rf", trControl = rfControl)
   
-  model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+  model_0 <-  train(as.factor(PossTeamWin) ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial)
-  model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial)
+                 +off_rating+def_rating, df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial, method = "rf", trControl = rfControl)
+  
+e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_list[[i]][df_list[[i]]$TimeoutRemaining==TRUE,], family = binomial)
+  
   model_list[[i]] <- list(model_1, model_0)
+  e_x_list[[i]] <- e_x
 }
 ```
 3.) Estimate $$\hat{\mu}^{adj}$$
@@ -129,8 +145,8 @@ for (i in 1:length(df_list)) {
 tau_aipws <- list()
 for (i in 1:length(df_list)) {
   df_temp <- df_list[[i]]
-  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  (predict(model_list[[i]][[1]], df_temp, type = "response")))
-  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], df_temp, type = "response")))/(1-predict(e_x, df_temp, type = "response"))) + (predict(model_list[[i]][[2]], df_temp, type = "response")))
+  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))/predict(e_x_list[[i]], df_temp, type = "response")) +  (predict(model_list[[i]][[1]], newdata=df_temp, type='prob')[,2]))
+  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))/(1-predict(e_x_list[[i]], df_temp, type = "response"))) + (predict(model_list[[i]][[2]], newdata=df_temp, type='prob')[,2]))
   tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
 }
 print(tau_aipws)
@@ -146,21 +162,23 @@ tau_boot5 <- list()
 tau_boot6 <- list()
 tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6)
 for (j in 1:1200){
-    bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]])*0.9, replace = FALSE), ]
+    bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]]), replace = TRUE), ]
+    e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
+             data = bootstrapped_df[bootstrapped_df$TimeoutRemaining==TRUE,], family = binomial)
     
-    model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+      model_1 <-  train(as.factor(PossTeamWin) ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial)
-    
-    model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+                 +off_rating+def_rating,bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial, method = "rf", trControl = rfControl)
+  
+  model_0 <-  train(as.factor(PossTeamWin) ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
                  +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial)
+                 +off_rating+def_rating, bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial, method = "rf", trControl = rfControl)
     
-    mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
+    mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin -predict(model_1, newdata=bootstrapped_df, type='prob')[,2])/predict(e_x, bootstrapped_df, type = "response")) + predict(model_1, newdata=bootstrapped_df, type='prob')[,2])
     
-    mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/(1-predict(e_x, bootstrapped_df, type = "response"))) +  predict(model_0, bootstrapped_df, type = "response"))
+    mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin -predict(model_0, newdata=bootstrapped_df, type='prob')[,2])/(1-predict(e_x, bootstrapped_df, type = "response"))) + predict(model_0, newdata=bootstrapped_df, type='prob')[,2])
     tau_boot[[(j%%6) + 1]][[(as.integer(j/6)%%200) + 1]] <- (mu_hat_1 - mu_hat_0)
 }
 ```
@@ -246,35 +264,70 @@ These numbers are nonsensical, need to do IVreg with logistic regressions (2SRI)
 tau_ivs <- numeric(6)
 for (i in 1:6) {
   #1. perform log regression of timeoutcalled on covariates and instrument
-  model_1 <- glm(TimeoutCalledInitially ~ SecondsSinceLastTimeout +StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss +HomePoss+IsPlayoffs+ScoreDiffLastMinute+off_rating+def_rating, data = df_list[[i]], family = "binomial")
+  # model_1 <- glm(TimeoutCalledInitially ~ StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss +HomePoss+IsPlayoffs+ScoreDiffLastMinute+off_rating+def_rating, data = df_list[[i]], family = "binomial")
+  df_temp <- df_list[[i]]
+
+# Standardize only numeric predictors
+df_numeric_scaled <- scale(df_temp[, c("StartPossTime", "StartPossScoreDiff", "StartTmPtsPerPoss", 
+                      "HomePoss", "IsPlayoffs", "SecondsSinceLastTimeout", "ScoreDiffLastMinute", 
+                      "off_rating", "def_rating")])
+
+# Combine the scaled numeric data with the boolean data
+X <- as.matrix(cbind(df_numeric_scaled, df_temp[, "TimeoutRemaining"]))
+
+# Prepare the response variable
+y <- df_temp$TimeoutCalledInitially
+
+# Fit the Ridge logistic regression model
+cv_fit <- cv.glmnet(X, y, alpha=0, family="binomial")
   
   #2. generate predictions of timeoutcalled. 
-  df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
+  # df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
+  model_1 <- glmnet(X, y, alpha=0, lambda=cv_fit$lambda.min, family="binomial")
+  df_temp$timeoutresids <- df_temp$TimeoutCalledInitially - predict(model_1, X, type = "response")
   #3. Perform second log. regression of TeamPossWon on predicted Timeout and covariates
-  model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = df_list[[i]], family =binomial(link="logit"))
+  # model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+  #                +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+  #                +off_rating+def_rating,
+  #              data = df_list[[i]], family =binomial(link="logit"))
+  y <- df_temp$PossTeamWin
+  df_numeric_scaled <- scale(df_temp[, c("TimeoutCalledInitially", "timeoutresids", "StartPossTime", "StartPossScoreDiff", "StartTmPtsPerPoss", 
+                      "HomePoss", "IsPlayoffs", "SecondsSinceLastTimeout", "ScoreDiffLastMinute", 
+                      "off_rating", "def_rating")])
+  X <- as.matrix(cbind(df_numeric_scaled, df_temp[, "TimeoutRemaining"]))
+  # Fit the Ridge logistic regression model
+  cv_fit <- cv.glmnet(X, y, alpha=0, family="binomial")
+  model_2 <- glmnet(X, y, alpha=0, lambda=cv_fit$lambda.min, family="binomial")
+
+  # Combine the scaled numeric data with the boolean data
+  df_temp[, "TimeoutRemaining"] <- TRUE
+  X <- as.matrix(cbind(df_numeric_scaled, df_temp[, "TimeoutRemaining"]))
   
   # exogeneity test
-  print("exogeneity")
-  print(cor(resid(glm(PossTeamWin ~ SecondsSinceLastTimeout + TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = df_list[[i]], family =binomial(link="logit"))), df_list[[i]]$SecondsSinceLastTimeout))
+  # print("exogeneity")
+  # print(cor(resid(glm(PossTeamWin ~ TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
+  #                +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
+  #                +off_rating+def_rating,
+  #              data = df_list[[i]], family =binomial(link="logit"))), df_list[[i]]$TimeoutRemaining))
   # relevance test
-  print("relevance: ")
-  print(cor(df_list[[i]]$SecondsSinceLastTimeout, df_list[[i]]$TimeoutCalledInitially))
+  # print("relevance: ")
+  # print(cor(df_list[[i]]$TimeoutRemaining, df_list[[i]]$TimeoutCalledInitially))
   #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
-  df_temp <- df_list[[i]]
-  df_temp$TimeoutCalledInitially <- TRUE
-  preds_1 <- predict(model_2, df_temp, type = "response")
+  # df_temp$TimeoutCalledInitially <- TRUE
+  preds_1 <- predict(model_2, X, type = "response")
   
-  df_temp$TimeoutCalledInitially <- FALSE
-  preds_0 <- predict(model_2, df_temp, type = "response")
+  df_temp[, "TimeoutRemaining"] <- FALSE
+  X <- as.matrix(cbind(df_numeric_scaled, df_temp[, "TimeoutRemaining"]))
+  preds_0 <- predict(model_2, X, type = "response")
   tau_ivs[i] <- mean(preds_1 - preds_0)
 }
 print(tau_ivs)
+
+ggplot(df1, aes(x = StartEvent, y = TimeoutCalledInitially)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(TimeoutCalledInitially, 3)), vjust = -0.3) + # Adding text above bars
+  labs(y = "Timeout Rate", x = "Start Event") +
+  theme_minimal()
 ```
 Some of these numbers are suspiciously large. But this could point to the fact
 that our analysis is dampened by many unobserved confounders
