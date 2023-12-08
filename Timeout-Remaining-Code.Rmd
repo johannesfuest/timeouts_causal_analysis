@@ -1,0 +1,205 @@
+```{r}
+# "pre" and "post" refer to before/after rule changes to TOs, 
+# which occurred prior to 2017-2018 season.
+#
+# see https://official.nba.com/rule-no-5-scoring-and-timing/
+# for "post" rules;
+#
+# see https://ak-static-int.nba.com/wp-content/uploads/sites/3/2016/11/2016-2017-Rule-Book.pdf
+# (doc page 22, pdf page 23) for "pre" rules.
+
+poss <- read.csv("poss_summary.csv") %>% 
+  dplyr::mutate(instance_id = row_number())
+ 
+seasons_post = 2018:2024
+df_post <- load_nba_pbp(seasons = seasons_post)
+ 
+seasons_pre = 2010:2017
+df_pre <- load_nba_pbp(seasons = seasons_pre)
+
+poss_post <- poss %>%
+  dplyr::select(c("instance_id", "ESPNGameID", "TimeoutTime", "Period", "HomePoss")) %>% 
+  dplyr::inner_join(df_post, by = c("ESPNGameID" = "game_id"), relationship = "many-to-many") %>%
+  dplyr::mutate(time_left = dplyr::if_else(
+    clock_minutes >= 1,
+    start_quarter_seconds_remaining,
+    clock_seconds
+  ))
+
+poss_pre <- poss %>%
+  dplyr::select(c("instance_id", "ESPNGameID", "TimeoutTime", "Period", "HomePoss")) %>% 
+  dplyr::inner_join(df_pre, by = c("ESPNGameID" = "game_id"), relationship = "many-to-many") %>%
+  dplyr::mutate(time_left = dplyr::if_else(
+    clock_minutes >= 1,
+    start_quarter_seconds_remaining,
+    clock_seconds
+  ))
+```
+
+```{r}
+reg_instances_post <- poss_post %>%
+  dplyr::filter(Period == 4)
+
+ot_instances_post <- poss_post %>% 
+  dplyr::filter(Period >= 5)
+
+reg_timeout_info_post <- reg_instances_post %>%
+  dplyr::filter(grepl("timeout", tolower(type_text))) %>%
+  dplyr::filter(type_id == 16) %>% # only "full" timeouts post-rule-changes
+  dplyr::group_by(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id) %>% 
+  dplyr::summarise(away_tos_before_fourth = sum(away_team_id == team_id & period_number <= 3),
+                   home_tos_before_fourth = sum(home_team_id == team_id & period_number <= 3),
+                   away_tos_remaining_fourth = min(4, 7 - away_tos_before_fourth),
+                   home_tos_remaining_fourth = min(4, 7 - home_tos_before_fourth),
+                   away_tos_used_fourth = sum(away_team_id == team_id & period_number == 4 & time_left > TimeoutTime),
+                   home_tos_used_fourth = sum(home_team_id == team_id & period_number == 4 & time_left > TimeoutTime),
+                   away_tos_before_3_mins = sum(away_team_id == team_id & period_number == 4 & time_left >= 180),
+                   home_tos_before_3_mins = sum(home_team_id == team_id & period_number == 4 & time_left >= 180),
+                   two_tos_threshold = dplyr::case_when(
+                     away_tos_before_3_mins >= 1 & home_tos_before_3_mins >= 1 ~ 180,
+                     away_tos_before_3_mins >= 2 | home_tos_before_3_mins >= 2 ~ 180,
+                     away_tos_before_3_mins == 0 & home_tos_before_3_mins == 0 ~ max(time_left, subset = c(period_number == 4)),
+                     away_tos_before_3_mins + home_tos_before_3_mins == 1 ~ dplyr::if_else(
+                       away_tos_before_3_mins == 0, 
+                       max(time_left[period_number == 4 & team_id == away_team_id]),
+                       max(time_left[period_number == 4 & team_id == home_team_id]),
+                     ),
+                     .default = 180),
+                   away_tos_used_after_threshold = sum(away_team_id == team_id & period_number == 4 & time_left > TimeoutTime &  time_left <= two_tos_threshold),
+                   home_tos_used_after_threshold = sum(home_team_id == team_id & period_number == 4 & time_left > TimeoutTime &  time_left <= two_tos_threshold),
+                   away_out_of_tos = c(away_tos_used_after_threshold >= 2 | away_tos_used_fourth >= away_tos_remaining_fourth), 
+                   home_out_of_tos = c(home_tos_used_after_threshold >= 2 | home_tos_used_fourth >= home_tos_remaining_fourth), 
+                   .groups = "keep") %>% 
+  dplyr::select(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id, away_out_of_tos, home_out_of_tos)
+                   
+ot_timeout_info_post <- ot_instances_post %>%
+  dplyr::filter(grepl("timeout", tolower(type_text))) %>%
+  dplyr::filter(type_id == 16) %>% # only "full" timeouts post-rule-changes
+  dplyr::group_by(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id) %>% 
+  dplyr::summarise(away_out_of_tos = c(2 - sum(away_team_id == team_id & period_number == Period & time_left > TimeoutTime) <= 0),
+                   home_out_of_tos = c(2 - sum(home_team_id == team_id & period_number == Period & time_left > TimeoutTime) <= 0),
+                   .groups = "keep")                   
+                   
+timeout_info_post <- dplyr::bind_rows(reg_timeout_info_post, ot_timeout_info_post)
+```
+
+```{r}
+reg_instances_pre <- poss_pre %>%
+  dplyr::filter(Period == 4)
+
+ot_instances_pre <- poss_pre %>% 
+  dplyr::filter(Period >= 5)
+
+reg_timeout_info_pre <- reg_instances_pre %>%
+  dplyr::filter(grepl("timeout", tolower(type_text)))  %>%
+  dplyr::filter(type_id %in% c(16, 17)) %>% 
+  dplyr::group_by(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id) %>% 
+  dplyr::summarise(away_full_tos_before_fourth = sum(away_team_id == team_id & period_number <= 3 & type_id == 16),
+                   home_full_tos_before_fourth = sum(home_team_id == team_id & period_number <= 3 & type_id == 16),
+                   away_full_tos_remaining_fourth = min(3, 6 - away_full_tos_before_fourth),
+                   home_full_tos_remaining_fourth = min(3, 6 - home_full_tos_before_fourth),
+                   away_full_tos_used_before_two_mins = sum(away_team_id == team_id & period_number == 4 & time_left > 120 & type_id == 16),
+                   home_full_tos_used_before_two_mins = sum(home_team_id == team_id & period_number == 4 & time_left > 120 & type_id == 16),
+                   away_full_tos_remaining_two_mins = away_full_tos_remaining_fourth - away_full_tos_used_before_two_mins,
+                   home_full_tos_remaining_two_mins = home_full_tos_remaining_fourth - home_full_tos_used_before_two_mins,
+                   away_20s_tos_used_before_two_mins = sum(away_team_id == team_id & half == 2 & start_half_seconds_remaining > 120 & type_id == 17),
+                   home_20s_tos_used_before_two_mins = sum(home_team_id == team_id & half == 2 & start_half_seconds_remaining > 120 & type_id == 17), 
+                   away_20s_remaining_two_mins = dplyr::if_else(away_20s_tos_used_before_two_mins == 0, 1, 0),
+                   home_20s_remaining_two_mins = dplyr::if_else(home_20s_tos_used_before_two_mins == 0, 1, 0),
+                   away_tos_remaining_two_mins = away_full_tos_remaining_two_mins + away_20s_remaining_two_mins,
+                   home_tos_remaining_two_mins = home_full_tos_remaining_two_mins + home_20s_remaining_two_mins,
+                   away_tos_used_l2m_thresh = sum(away_team_id == team_id & period_number == 4 & time_left <= 120 & time_left > TimeoutTime),
+                   home_tos_used_l2m_thresh = sum(home_team_id == team_id & period_number == 4 & time_left <= 120 & time_left > TimeoutTime),
+                   away_out_of_tos = c(away_tos_remaining_two_mins - away_tos_used_l2m_thresh <= 0),
+                   home_out_of_tos = c(home_tos_remaining_two_mins - home_tos_used_l2m_thresh <= 0),
+                   .groups = "keep") %>% 
+  dplyr::select(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id, away_out_of_tos, home_out_of_tos)
+
+ot_timeout_info_pre <- ot_instances_pre %>%
+  dplyr::filter(grepl("timeout", tolower(type_text)))  %>%
+  dplyr::filter(type_id %in% c(16, 17)) %>% 
+  dplyr::group_by(ESPNGameID, TimeoutTime, Period, HomePoss, instance_id) %>% 
+  dplyr::summarise(away_out_of_tos = c(3 - sum(away_team_id == team_id & period_number == Period & time_left > TimeoutTime) <= 0),
+                   home_out_of_tos = c(3 - sum(home_team_id == team_id & period_number == Period & time_left > TimeoutTime) <= 0),
+                   .groups = "keep")
+
+timeout_info_pre <- dplyr::bind_rows(reg_timeout_info_pre, ot_timeout_info_pre)
+```
+
+```{r}
+timeout_info <- dplyr::bind_rows(timeout_info_post, timeout_info_pre) %>% 
+  dplyr::ungroup() %>%
+  dplyr::mutate(TimeoutRemaining = dplyr::if_else(
+    HomePoss,
+    !home_out_of_tos,
+    !away_out_of_tos)) %>% 
+  dplyr::select(c("instance_id", "TimeoutRemaining"))
+
+joined_data <- poss %>% 
+  dplyr::inner_join(timeout_info, by = c("instance_id"))
+```
+
+Where do the times not lineup (when timeout is called, but no timeout seemingly remaining)?
+
+Turns out for the vast majority, differences are << 1 sec. Could be post-review clock changes, very slight data mismatches -- whatever the case, doesn't appear to be a real issue. As a result, since the team clearly had a timeout left there, just swap the boolean value for timeout remaining.
+
+Larger time discrepancies or other data issues? Remove observation.
+
+```{r}
+# table(joined_data$TimeoutCalledInitially, joined_data$TimeoutRemaining)
+# table(joined_data$Period[which(!joined_data$TimeoutRemaining & joined_data$TimeoutCalledInitially)])
+# which(!joined_data$TimeoutRemaining & joined_data$TimeoutCalledInitially)
+
+off <- joined_data[which(!joined_data$TimeoutRemaining & joined_data$TimeoutCalledInitially), ]
+count_off <- 0
+
+for (i in 1:nrow(off)) {
+  game_id <- off[i, "ESPNGameID"]
+  per <- off[i, "Period"]
+  tm <- off[i, "TimeoutTime"]
+  
+  if (per == 4 & game_id %in% reg_instances_post$ESPNGameID) {
+    df <- reg_instances_post
+  } else if (per > 4 & game_id %in% ot_instances_post$ESPNGameID) {
+    df <- ot_instances_post
+  } else if (per == 4 & game_id %in% reg_instances_pre$ESPNGameID) {
+    df <- reg_instances_pre
+  } else if (per > 4 & game_id %in% ot_instances_pre$ESPNGameID) {
+    df <- ot_instances_pre
+  } else {
+    next
+  }
+  
+  tos <- df %>% 
+    dplyr::filter(ESPNGameID == game_id) %>%
+    dplyr::filter(grepl("timeout", tolower(type_text)))  %>%
+    dplyr::filter(type_id %in% c(16, 17)) %>% 
+    dplyr::filter(period_number == per) %>% 
+    dplyr::mutate(diff_col = abs(time_left - tm)) %>% 
+    dplyr::filter(diff_col == min(diff_col))
+  
+  dist_off <- tos[1, "diff_col"]
+  if (dist_off != 0) {
+    count_off <- count_off + 1
+    off[i, "clock_off"] <- TRUE
+    off[i, "dist_off"] <- dist_off
+  } else {
+    off[i, "clock_off"] <- FALSE
+    off[i, "dist_off"] <- 0
+  }
+}
+hist(off$dist_off[off$clock_off & off$dist_off < 5])
+```
+
+```{r}
+instance_ids_to_correct <- off$instance_id[which(off$clock_off & off$dist_off < 1)]
+instances_to_correct <- which(joined_data$instance_id %in% instance_ids_to_correct)
+instances_ids_to_remove <- off$instance_id[!(off$instance_id %in% instance_ids_to_correct)]
+instances_to_remove <- which(joined_data$instance_id %in% instances_ids_to_remove)
+
+joined_data[instances_to_correct, "TimeoutRemaining"] <- !joined_data[instances_to_correct, "TimeoutRemaining"]
+joined_data <- joined_data[-instances_to_remove, ] %>% 
+  dplyr::select(-c("instance_id"))
+# table(joined_data$TimeoutCalledInitially, joined_data$TimeoutRemaining)
+write.csv(joined_data, "data_with_to_info.csv")
+```
