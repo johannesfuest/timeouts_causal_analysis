@@ -107,78 +107,8 @@ e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDif
              data = df_timeouts, family = binomial)
 summary(e_x)
 ```
-2.) Estimate outcome variable with logistic regression for each df
-```{r}
-# missing
-df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
-model_list <- list()
 
-# Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
-for (i in 1:length(df_list)) {
-  
-  model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==TRUE,], family = binomial)
-  model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-             data = df_list[[i]][df_list[[i]]$TimeoutCalledInitially==FALSE,], family = binomial)
-  model_list[[i]] <- list(model_1, model_0)
-}
-```
-3.) Estimate $$\hat{\mu}^{adj}$$
-```{r}
-tau_aipws <- list()
-for (i in 1:length(df_list)) {
-  df_temp <- df_list[[i]]
-  mu_hat_1 <- mean((df_temp$TimeoutCalledInitially * (df_temp$PossTeamWin - (predict(model_list[[i]][[1]], df_temp, type = "response")))/predict(e_x, df_temp, type = "response")) +  (predict(model_list[[i]][[1]], df_temp, type = "response")))
-  mu_hat_0 <- mean(((1-df_temp$TimeoutCalledInitially) * (df_temp$PossTeamWin - (predict(model_list[[i]][[2]], df_temp, type = "response")))/(1-predict(e_x, df_temp, type = "response"))) + (predict(model_list[[i]][[2]], df_temp, type = "response")))
-  tau_aipws[[i]] <- (mu_hat_1 - mu_hat_0)
-}
-print(tau_aipws)
-```
-Next, we use the bootstrap to estimate the variance of our AIPW taus
-Question: how to bootstrap when model must be re-estimated each time?
-```{r}
-tau_boot1 <- list()
-tau_boot2 <- list()
-tau_boot3 <- list()
-tau_boot4 <- list()
-tau_boot5 <- list()
-tau_boot6 <- list()
-tau_boot <- list(tau_boot1, tau_boot2, tau_boot3, tau_boot4, tau_boot5, tau_boot6)
-for (j in 1:1200){
-    bootstrapped_df <- df_list[[(j%%6) + 1]][sample(nrow(df_list[[(j%%6) + 1]]), nrow(df_list[[(j%%6) + 1]])*0.9, replace = FALSE), ]
-    
-    model_1 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==TRUE,], family = binomial)
-    
-    model_0 <- glm(PossTeamWin ~ 1+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = bootstrapped_df[bootstrapped_df$TimeoutCalledInitially==FALSE,], family = binomial)
-    
-    mu_hat_1 <- mean((bootstrapped_df$TimeoutCalledInitially * (bootstrapped_df$PossTeamWin - predict(model_1, bootstrapped_df, type = "response"))/predict(e_x, bootstrapped_df, type = "response")) +  predict(model_1, bootstrapped_df, type = "response"))
-    
-    mu_hat_0 <- mean(((1-bootstrapped_df$TimeoutCalledInitially) * (bootstrapped_df$PossTeamWin - predict(model_0, bootstrapped_df, type = "response"))/(1-predict(e_x, bootstrapped_df, type = "response"))) +  predict(model_0, bootstrapped_df, type = "response"))
-    tau_boot[[(j%%6) + 1]][[(as.integer(j/6)%%200) + 1]] <- (mu_hat_1 - mu_hat_0)
-}
-```
-This gives us CIs for all of our taus for AIPW:
-```{r}
-for (i in 1:6) {
-  alpha <- 0.05
-  lower_bound <- sort(unlist(tau_boot[[i]]))[[5]]
-  upper_bound <- sort(unlist(tau_boot[[i]]))[[195]]
-  conf_interval <- c(lower_bound, upper_bound)
-  print(conf_interval)
-}
-
-```
-Some of our taus are not zero. More analysis later.
+---------------------------------------------------------------------------------------
 
 Next: matched pairs design:
 
@@ -191,16 +121,7 @@ library(dplyr)
 library(rcbalance)
 ```
 
----------------------------------------------------------------------------------------
-
 ```{r}
-names(df_list) <- c("3 to 8, live ball", 
-                    "3 to 8, def rebound",
-                    "3 to 8, dead ball", 
-                    "8 to 24, live ball",
-                    "8 to 24, def rebound",
-                    "8 to 24, dead ball")
-
 df1 <- df1 %>% 
   dplyr::mutate(StartEventBin = dplyr::case_when(
     StartEvent == "Drb" ~ "Drb",
@@ -341,6 +262,7 @@ match_formula_subset <- formula(TimeoutCalledInitially ~
                                      SecondsSinceLastTimeout + ScoreDiffLastMinute + 
                                      off_rating + def_rating)
 
+par(mfrow = c(3, 2))
 for (i in 1:6) {
   grp <- names(df_list)[i]
   df_subset <- df_list[[i]]
@@ -396,6 +318,7 @@ for (i in 1:6) {
          y = "Variable"))
   
   print(paste0(grp, ", caliper-matching details:"))
+  print(paste0("Number of matches, ", grp, ": ", sum(!is.na(caliper_matching_subset)) / 2))
   df_subset$caliper_pair <- as.character(caliper_matching_subset)
   avg_and_max_e_hat_diffs(df_subset, caliper_pair)
     
@@ -455,114 +378,27 @@ force_match_time_and_start_matrix <- DOS2::addalmostexact(caliper_matching_matri
 
 In our case, if mult is over 5 (leading to a total mult over 25 for some obs), optmatch::pairmatch doesn't converge. Overall takeaway -- we can use matching if we want, but the covariate balances aren't ideal from an interpretability standpoint (despite the mathematical thumbs-up of pretty good propensity-score matching).
 
+One more code chunk: for plotting treatment incidence rates given a timeout available (as discussed in the "discussion" section).
+
+```{r}
+rates <- rep(NA, 6)
+names(rates) <- c("3-8, LB", "3-8, DRB", "3-8, DB", 
+                  "8-24, LB", "8-24, DRB", "8-24, DB")
+for (i in 1:6) {
+  to_avail <- df_list[[i]] %>% 
+    dplyr::filter(TimeoutRemaining)
+  rates[i] <- sum(to_avail$TimeoutCalledInitially)/nrow(to_avail)
+}
+rates <- rates * 100
+rates_df <- data.frame(Group = names(rates), TO_Incidence = rates)
+
+ggplot(data = rates_df, 
+       aes(x = Group, y = TO_Incidence, fill = as.factor(Group))) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_brewer() +
+  theme(legend.position = "none", panel.background = element_blank()) + 
+  scale_y_continuous("Timeout Incidence (%)") + 
+  ggtitle("% TO called given TO remaining, by scenario")
+```
+
 ---------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-```{r}
-for (i in 1:6) {
-  df_subset <- df_list[[i]]
-  df_subset$prop <- predict(e_x, df_temp, type = "response")
-ggplot(data=df_temp, aes(x=prop, group=as.factor(TimeoutCalledInitially),
-fill=as.factor(TimeoutCalledInitially))) + geom_density(alpha=0.5) + theme_bw()
-  mat.1 <- smahal(df_temp$TimeoutCalledInitially, df_temp[,c("StartPossTime","StartPossScoreDiff","StartTmPtsPerPoss","HomePoss","IsPlayoffs","SecondsSinceLastTimeout","ScoreDiffLastMinute","off_rating","def_rating")])
-ms.2 <- pairmatch(mat.1, data=df_temp)
-plot(xBalance(TimeoutCalledInitially~StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-strata=list(unstrat=NULL, ms.2=~ms.2),
-data=df_temp))
-legend(
-    "topright",
-    legend = c("Pre matching", "Post Matching"),
-    inset = 0.01,
-    pch = c(15, 16),
-    bg = "white"
-)
-# summa <- summarize.Match(df_temp, ms.2)
-# TODO: fix matching 
-}
-```
-IV regression using TimeoutRemaining
-as an instrumental variable:
-```{r}
-print(cor(df1$TimeoutRemaining, df1$TimeoutCalledInitially))
-```
-Correlation between our instrument and treatment are high. 
-
-```{r}
-library(AER)
-regs <- list()
-for (i in 1:6) {
-  result <- ivreg(PossTeamWin ~ TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating|TimeoutRemaining+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+SecondsSinceLastTimeout+ScoreDiffLastMinute
-                 +off_rating+def_rating, data = df_list[[i]])
-  regs[[i]] <- summary(result)
-  
-}
-
-for (i in 1:6) {
-  reg <- regs[[i]]
-  alpha <- 0.05
-  lower_bound <- coef(reg)[2] - 1.96*reg$coefficients[2, "Std. Error"]
-  upper_bound <- coef(reg)[2] + 1.96*reg$coefficients[2, "Std. Error"]
-  conf_interval <- c(lower_bound, upper_bound)
-  print(conf_interval)
-}
-```
-These numbers are nonsensical, need to do IVreg with logistic regressions (2SRI):
-#TODO: discuss 2SRI with Dominic
-```{r}
-tau_ivs <- numeric(6)
-for (i in 1:6) {
-  #1. perform log regression of timeoutcalled on covariates and instrument
-  model_1 <- glm(TimeoutCalledInitially ~ SecondsSinceLastTimeout +StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss +HomePoss+IsPlayoffs+ScoreDiffLastMinute+off_rating+def_rating, data = df_list[[i]], family = "binomial")
-  
-  #2. generate predictions of timeoutcalled. 
-  df_list[[i]]$timeoutresids <- df_list[[i]]$TimeoutCalledInitially - predict(model_1, df_list[[i]], type = "response")
-  #3. Perform second log. regression of TeamPossWon on predicted Timeout and covariates
-  model_2 <- glm(PossTeamWin ~ TimeoutCalledInitially+timeoutresids+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = df_list[[i]], family =binomial(link="logit"))
-  
-  # exogeneity test
-  print("exogeneity")
-  print(cor(resid(glm(PossTeamWin ~ SecondsSinceLastTimeout + TimeoutCalledInitially+StartPossTime+StartPossScoreDiff+StartTmPtsPerPoss
-                 +HomePoss+IsPlayoffs+ScoreDiffLastMinute
-                 +off_rating+def_rating,
-               data = df_list[[i]], family =binomial(link="logit"))), df_list[[i]]$SecondsSinceLastTimeout))
-  # relevance test
-  print("relevance: ")
-  print(cor(df_list[[i]]$SecondsSinceLastTimeout, df_list[[i]]$TimeoutCalledInitially))
-  #4. calculate the difference in predicted probabilities of the outcome with and without treatment and average. 
-  df_temp <- df_list[[i]]
-  df_temp$TimeoutCalledInitially <- TRUE
-  preds_1 <- predict(model_2, df_temp, type = "response")
-  
-  df_temp$TimeoutCalledInitially <- FALSE
-  preds_0 <- predict(model_2, df_temp, type = "response")
-  tau_ivs[i] <- mean(preds_1 - preds_0)
-}
-print(tau_ivs)
-```
-Some of these numbers are suspiciously large. But this could point to the fact
-that our analysis is dampened by many unobserved confounders
-
-#TODO: derive CIs for this
-
