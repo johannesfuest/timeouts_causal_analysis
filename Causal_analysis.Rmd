@@ -124,19 +124,16 @@ logLik(e_x)
 
 2.) Estimate outcome variable with random forest for each df
 ```{r}
-# missing
 df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
 model_list <- list()
 e_x_list <- list()
 
-# set up cv for RF
   seeds <- vector("list", length = 6)
 for (j in 1:5) {
   seeds[[j]] <- c(1,2,3)
 }
 seeds[[6]] <- c(1,2,3,4,5)
   
-  # rfControl <- trainControl(method = "cv", number = 5, seeds=seeds)
  rfControl <- trainControl(method = "none")
 
 # Loop through each DataFrame and fit a logistic regression model on treatments and controls respectively (have to leave out starting event, also leaving out period due to issues from rare overtimes)
