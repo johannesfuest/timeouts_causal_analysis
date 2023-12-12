@@ -118,11 +118,16 @@ e_x <- glm(TimeoutCalledInitially ~ 1+StartPossTime+StartPossScoreDiff
            +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
            +ScoreDiffLastMinute+off_rating+def_rating,
              data = df_timeouts, family = binomial)
-summary(e_x)
+print("Log likelihood with 10 df's ")
 logLik(e_x)
+e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDiff
+           +StartTmPtsPerPoss+HomePoss+IsPlayoffs+SecondsSinceLastTimeout
+           +ScoreDiffLastMinute+off_rating+def_rating,
+             data = df_timeouts, family = binomial)
 ```
 
-2.) Estimate outcome variable with random forest for each df
+2.) Estimate outcome variable with random forest for each df.
+Note that we fit separate propensity scores within each stratum here and compare the log likelihood to the propensity score fit on the full dataset. We note that the propensity score  
 ```{r}
 df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
 model_list <- list()
