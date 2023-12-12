@@ -22,6 +22,7 @@ Here we simply read data and do some simple preprocessing. Some notes:
 - Keeping StartPossScoreDiff, StartTmScore, and StartOppScore not possible due to multicollinearity -> keep only StartPossScorediff
 - Remove Period due to unseen levels in factor
 ```{r outcome regression}
+set.seed(123)
 df1 <- read.csv('data_with_to_info.csv')
 names(df1)[names(df1) == "def_rating"] <- "def_rating_old"
 names(df1)[names(df1) == "TimeBins"] <- "TimeBins_old"
@@ -127,7 +128,7 @@ e_x <- glm(TimeoutCalledInitially ~ 1+StartEvent+StartPossTime+StartPossScoreDif
 ```
 
 2.) Estimate outcome variable with random forest for each df.
-Note that we fit separate propensity scores within each stratum here and compare the log likelihood to the propensity score fit on the full dataset. We note that the propensity score  
+We fit separate propensity scores within each stratum here and compare the log likelihood to the propensity score fit on the full dataset. We note that the propensity score when fitting separate models for each stratum is greater than the propensity score when fitting on the full dataset (for 10 df's). This suggests that it would be optimal to fit on each stratum separately. However, when doing so, we get an unstable fit when bootstrapping (with some predictions being 0 or 1). Therefore, we have chosen to use the propensity score fit on the entire dataset with a covariate for StartEvent.
 ```{r}
 df_list <- list(df_3to8_live,df_3to8_drb, df_3to8_dead, df_8to24_live, df_8to24_drb, df_8to24_dead)
 model_list <- list()
@@ -179,6 +180,7 @@ print(tau_aipws)
 ```
 Next, we use the bootstrap to estimate the variance of our AIPW taus
 ```{r}
+
 tau_boot1 <- list()
 tau_boot2 <- list()
 tau_boot3 <- list()
@@ -226,6 +228,13 @@ df1 <- df1 %>%
     StartEvent == "Live Ball Turnover" ~ "Live",
     .default = "Dead"
   ))
+
+names(df_list) <- c("3 to 8, live ball",
+                    "3 to 8, def rebound",
+                    "3 to 8, dead ball",
+                    "8 to 24, live ball",
+                    "8 to 24, def rebound",
+                    "8 to 24, dead ball")
 ```
 
 Starting with full-data matching and working down towards forcing matches on the meta-variables. If that doesn't work, will look at matching within each combo-of-meta-variables subset.
